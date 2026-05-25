@@ -18,6 +18,8 @@ import { stockService } from '../src/services/stockService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
 
 const SIZES = ['XS', 'S', 'M', 'L', 'XL'] as const;
+const BAG_STOCK_KEY = 'bag-stock';
+const BAG_STOCK_SIZE = '';
 
 type ProductWithStock = ProductStock & {
     price: number;
@@ -46,6 +48,7 @@ export default function ProductManagement() {
         adjustFailed: (size: string) => `Stok ayarlanamadı. Beden: ${size}.`,
         actionSaved: (type: 'production' | 'adjustment') => `${type === 'production' ? 'Üretim' : 'Stok ayarı'} kaydedildi.`,
         cost: 'Maliyet',
+        stock: 'Stok',
         total: 'Toplam',
         edit: 'Düzenle',
         production: '+ Üretim',
@@ -66,7 +69,9 @@ export default function ProductManagement() {
         recordProduction: 'Üretim Kaydı',
         adjustStock: 'Stok Ayarla',
         productionHint: 'Bedene göre üretilen adetleri girin',
+        bagProductionHint: 'Çanta için toplam stok adedini girin',
         adjustmentHint: 'Stok düzeltmek için +/- değer girin (örn. -3)',
+        bagAdjustmentHint: 'Çanta toplam stoğunu düzeltmek için +/- değer girin',
         saveProduction: 'ÜRETİMİ KAYDET',
         saveAdjustment: 'STOK AYARINI KAYDET',
         colors: {
@@ -91,6 +96,7 @@ export default function ProductManagement() {
         adjustFailed: (size: string) => `Could not adjust stock for size ${size}.`,
         actionSaved: (type: 'production' | 'adjustment') => `${type === 'production' ? 'Production' : 'Adjustment'} saved.`,
         cost: 'Cost',
+        stock: 'Stock',
         total: 'Total',
         edit: 'Edit',
         production: '+ Production',
@@ -111,7 +117,9 @@ export default function ProductManagement() {
         recordProduction: 'Record Production',
         adjustStock: 'Adjust Stock',
         productionHint: 'Enter quantities produced per size',
+        bagProductionHint: 'Enter total stock quantity for Bag',
         adjustmentHint: 'Enter +/− values to adjust stock (e.g. -3 to remove)',
+        bagAdjustmentHint: 'Enter +/− values to adjust total Bag stock',
         saveProduction: 'SAVE PRODUCTION',
         saveAdjustment: 'SAVE ADJUSTMENT',
         colors: {
@@ -195,6 +203,10 @@ export default function ProductManagement() {
 
     function getTotalStock(product: ProductWithStock): number {
         return product.stock?.reduce((sum, s) => sum + (s.quantity || 0), 0) || 0;
+    }
+
+    function isBagProduct(product: ProductWithStock | null): boolean {
+        return String(product?.product_type || '').trim().toLowerCase() === 'bag';
     }
 
     function getColorLabel(color: string): string {
@@ -281,9 +293,14 @@ export default function ProductManagement() {
     async function handleSaveAction() {
         if (!actionProduct) return;
         const sizes: { size: string; qty: number }[] = [];
-        for (const sz of SIZES) {
-            const val = parseInt(actionInputs[sz] || '0', 10);
-            if (val !== 0) sizes.push({ size: sz, qty: val });
+        if (isBagProduct(actionProduct)) {
+            const val = parseInt(actionInputs[BAG_STOCK_KEY] || '0', 10);
+            if (val !== 0) sizes.push({ size: BAG_STOCK_SIZE, qty: val });
+        } else {
+            for (const sz of SIZES) {
+                const val = parseInt(actionInputs[sz] || '0', 10);
+                if (val !== 0) sizes.push({ size: sz, qty: val });
+            }
         }
         if (sizes.length === 0) {
             Alert.alert(copy.warning, copy.enterQuantity);
@@ -326,6 +343,7 @@ export default function ProductManagement() {
     }
 
     function renderProduct({ item }: { item: ProductWithStock }) {
+        const isBag = isBagProduct(item);
         return (
             <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -350,16 +368,25 @@ export default function ProductManagement() {
                 </View>
 
                 <View style={styles.stockRow}>
-                    {SIZES.map(sz => (
-                        <View key={sz} style={styles.stockCell}>
-                            <Text style={styles.stockLabel}>{sz}</Text>
-                            <Text style={styles.stockValue}>{getStockQty(item, sz)}</Text>
+                    {isBag ? (
+                        <View style={[styles.stockCell, styles.bagStockCell]}>
+                            <Text style={styles.stockLabel}>{copy.stock}</Text>
+                            <Text style={[styles.stockValue, styles.stockValueTotal]}>{getTotalStock(item)}</Text>
                         </View>
-                    ))}
-                    <View style={[styles.stockCell, styles.stockCellTotal]}>
-                        <Text style={styles.stockLabel}>{copy.total}</Text>
-                        <Text style={[styles.stockValue, styles.stockValueTotal]}>{getTotalStock(item)}</Text>
-                    </View>
+                    ) : (
+                        <>
+                            {SIZES.map(sz => (
+                                <View key={sz} style={styles.stockCell}>
+                                    <Text style={styles.stockLabel}>{sz}</Text>
+                                    <Text style={styles.stockValue}>{getStockQty(item, sz)}</Text>
+                                </View>
+                            ))}
+                            <View style={[styles.stockCell, styles.stockCellTotal]}>
+                                <Text style={styles.stockLabel}>{copy.total}</Text>
+                                <Text style={[styles.stockValue, styles.stockValueTotal]}>{getTotalStock(item)}</Text>
+                            </View>
+                        </>
+                    )}
                 </View>
 
                 <View style={styles.actionRow}>
@@ -487,27 +514,44 @@ export default function ProductManagement() {
                         <Text style={styles.modalSubtitle}>{actionProduct?.name}</Text>
                         <Text style={styles.modalHint}>
                             {actionType === 'production'
-                                ? copy.productionHint
-                                : copy.adjustmentHint}
+                                ? (isBagProduct(actionProduct) ? copy.bagProductionHint : copy.productionHint)
+                                : (isBagProduct(actionProduct) ? copy.bagAdjustmentHint : copy.adjustmentHint)}
                         </Text>
 
                         <View style={styles.sizeInputRow}>
-                            {SIZES.map(sz => (
-                                <View key={sz} style={styles.sizeInputGroup}>
-                                    <Text style={styles.sizeInputLabel}>{sz}</Text>
+                            {isBagProduct(actionProduct) ? (
+                                <View style={[styles.sizeInputGroup, styles.bagInputGroup]}>
+                                    <Text style={styles.sizeInputLabel}>{copy.stock}</Text>
                                     <Text style={styles.sizeInputCurrent}>
-                                        {actionProduct ? getStockQty(actionProduct, sz) : 0}
+                                        {actionProduct ? getTotalStock(actionProduct) : 0}
                                     </Text>
                                     <TextInput
-                                        value={actionInputs[sz] || ''}
-                                        onChangeText={val => setActionInputs(prev => ({ ...prev, [sz]: val }))}
+                                        value={actionInputs[BAG_STOCK_KEY] || ''}
+                                        onChangeText={val => setActionInputs(prev => ({ ...prev, [BAG_STOCK_KEY]: val }))}
                                         keyboardType="numeric"
                                         placeholder="0"
                                         style={styles.sizeInput}
                                         placeholderTextColor="#9ca3af"
                                     />
                                 </View>
-                            ))}
+                            ) : (
+                                SIZES.map(sz => (
+                                    <View key={sz} style={styles.sizeInputGroup}>
+                                        <Text style={styles.sizeInputLabel}>{sz}</Text>
+                                        <Text style={styles.sizeInputCurrent}>
+                                            {actionProduct ? getStockQty(actionProduct, sz) : 0}
+                                        </Text>
+                                        <TextInput
+                                            value={actionInputs[sz] || ''}
+                                            onChangeText={val => setActionInputs(prev => ({ ...prev, [sz]: val }))}
+                                            keyboardType="numeric"
+                                            placeholder="0"
+                                            style={styles.sizeInput}
+                                            placeholderTextColor="#9ca3af"
+                                        />
+                                    </View>
+                                ))
+                            )}
                         </View>
 
                         <TouchableOpacity style={[styles.submitBtn, actionSaving && styles.disabledBtn]} onPress={handleSaveAction} disabled={actionSaving}>
@@ -563,6 +607,7 @@ return StyleSheet.create({
     stockRow: { flexDirection: 'row', gap: 4, marginBottom: 10 },
     stockCell: { flex: 1, alignItems: 'center', backgroundColor: colors.surfaceMuted, borderRadius: 6, paddingVertical: 8 },
     stockCellTotal: { backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff' },
+    bagStockCell: { alignItems: 'flex-start', paddingHorizontal: 14, borderRadius: 10, backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff' },
     stockLabel: { fontSize: 12, fontWeight: '600', color: colors.subtext, marginBottom: 2 },
     stockValue: { fontSize: 16, fontWeight: '700', color: colors.text },
     stockValueTotal: { color: colors.primary },
@@ -581,6 +626,7 @@ return StyleSheet.create({
     modalHint: { fontSize: 12, color: colors.subtext, marginBottom: 16 },
     sizeInputRow: { flexDirection: 'row', gap: 6, marginBottom: 16 },
     sizeInputGroup: { flex: 1, alignItems: 'center' },
+    bagInputGroup: { alignItems: 'stretch' },
     sizeInputLabel: { fontSize: 12, fontWeight: '600', color: colors.subtext, marginBottom: 2 },
     sizeInputCurrent: { fontSize: 12, color: colors.subtext, marginBottom: 4 },
     sizeInput: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, borderRadius: 8, padding: 8, fontSize: 14, textAlign: 'center', width: '100%', color: colors.text },

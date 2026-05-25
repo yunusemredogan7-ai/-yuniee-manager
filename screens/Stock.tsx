@@ -24,6 +24,7 @@ export default function Stock() {
         noProducts: 'Henüz ürün yok',
         addProducts: 'Ürünleri Ürün Yönetimi üzerinden ekleyin.',
         noSizes: 'Henüz beden stoğu girilmedi.',
+        noStock: 'Henüz stok girilmedi.',
         base: 'Maliyet',
         total: 'Toplam',
         productManagement: 'Ürün Yönetimi',
@@ -37,6 +38,7 @@ export default function Stock() {
         noProducts: 'No products yet',
         addProducts: 'Add products via Product Management.',
         noSizes: 'No sizes logged yet.',
+        noStock: 'No stock logged yet.',
         base: 'Base',
         total: 'Total',
         productManagement: 'Product Management',
@@ -127,6 +129,7 @@ export default function Stock() {
                     products.map(p => {
                         const total = p.stock?.reduce((s, st) => s + (st.quantity || 0), 0) || 0;
                         const isProductLowStock = total < 10;
+                        const isBag = String(p.product_type || '').trim().toLowerCase() === 'bag';
                         
                         return (
                             <View key={p.id} style={[styles.previewCard, isProductLowStock && styles.previewCardLowWarning]}>
@@ -139,7 +142,12 @@ export default function Stock() {
                                 </View>
                                 
                                 {(!p.stock || p.stock.length === 0) ? (
-                                    <Text style={styles.noStockText}>{copy.noSizes}</Text>
+                                    <Text style={styles.noStockText}>{isBag ? copy.noStock : copy.noSizes}</Text>
+                                ) : isBag ? (
+                                    <View style={styles.bagStockSummary}>
+                                        <Text style={styles.bagStockLabel}>{copy.total}</Text>
+                                        <Text style={styles.bagStockValue}>{total}</Text>
+                                    </View>
                                 ) : (
                                     <View style={styles.sizesGrid}>
                                         {p.stock.sort((a,b) => a.size.localeCompare(b.size)).map((s, idx) => (
@@ -373,6 +381,29 @@ return StyleSheet.create({
     },
     sizeQtyLow: {
         color: colors.danger,
+    },
+    bagStockSummary: {
+        backgroundColor: colors.surfaceMuted,
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 10,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    bagStockLabel: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: colors.subtext,
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+    },
+    bagStockValue: {
+        fontSize: 18,
+        fontWeight: '800',
+        color: colors.text,
     },
     navSection: {
         marginTop: 20,

@@ -4,6 +4,7 @@ export type ProductStock = {
     id: number;
     name: string;
     cost: number;
+    product_type: string | null;
     stock: { size: string; quantity: number }[];
 };
 
@@ -15,6 +16,7 @@ export const productionService = {
                 id,
                 name,
                 cost,
+                product_type,
                 stock (
                     size,
                     quantity
