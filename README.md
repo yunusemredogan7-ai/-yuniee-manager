@@ -1,97 +1,173 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Yuniee Manager
 
-# Getting Started
+Yuniee Manager is a private mobile admin app for YUNIEE. It is built for owner/admin use only and is currently intended for a very small internal team of two people.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+This is not a customer-facing shopping app. It is an operational tool for managing daily business work such as orders, inventory, packaging costs, finance, expenses, and internal tasks.
 
-## Step 1: Start Metro
+## Project Overview
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+The app centralizes YUNIEE's owner/admin workflows into one React Native application. It connects to Supabase for authentication, data storage, order records, stock data, finance-related tables, packaging materials, packaging rules, and task persistence.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+The product direction is practical and restrained: a calm, premium, mobile-first admin app for daily operational use.
+
+## Purpose
+
+Yuniee Manager helps the business owner/admin team:
+
+- Create and manage customer orders
+- Track delivered orders and sales history
+- Manage stock and product data
+- Maintain packaging materials and product packaging rules
+- Monitor revenue, profit, expenses, and operating costs
+- Organize internal work with a Kanban-style To Do board
+- Configure local app preferences such as theme and language
+
+## Main Features
+
+- **Dashboard**: overview of orders, revenue, profit, stock alerts, top products, and recent orders.
+- **Orders**: multi-item order creation, customer info, source tracking, packaging cost display, and order status management.
+- **Stock**: product stock overview, low-stock visibility, stock movement history, and product management access.
+- **Product Management**: product structure including name, product type, color, cost, price, and stock-related actions.
+- **Packaging Materials**: editable packaging material list with unit types and unit costs.
+- **Product Recipes / Packaging Rules**: editable product-type-based packaging rules used for packaging cost calculation.
+- **Finance Overview**: high-level revenue, expense, profit, and cost management navigation.
+- **Sales History**: delivered order and sales trail with revenue and profit visibility.
+- **Expenses**: business overhead and operating cost tracking.
+- **To Do / Kanban**: internal task board with lanes, due dates, waiting reasons, notes, WIP limit, and persistence.
+- **Settings**: light/dark theme, English/Turkish language preference, and notification-related preferences.
+
+## Tech Stack
+
+- **React Native** `0.84.1`
+- **React** `19.2.3`
+- **TypeScript**
+- **React Navigation**
+  - Bottom tabs
+  - Native stack navigation
+- **Supabase JS** for backend access
+- **AsyncStorage** for local app preferences
+- **React Native Vector Icons**
+- **ESLint / Prettier / Jest**
+- **iOS and Android native projects** included through the standard React Native CLI setup
+
+## Project Structure
+
+```text
+.
+├── App.tsx
+├── screens/
+│   ├── Dashboard.tsx
+│   ├── Orders.tsx
+│   ├── ToDo.tsx
+│   ├── Stock.tsx
+│   ├── ProductManagement.tsx
+│   ├── FinanceOverview.tsx
+│   ├── SalesHistory.tsx
+│   ├── Expenses.tsx
+│   ├── PackagingMaterials.tsx
+│   ├── ProductRecipes.tsx
+│   └── Settings.tsx
+├── src/
+│   ├── core/
+│   │   ├── settings/
+│   │   └── supabase/
+│   ├── services/
+│   └── components/
+├── supabase/
+│   └── migrations/
+├── ios/
+├── android/
+└── package.json
+```
+
+## Local Development
+
+Install dependencies:
 
 ```sh
-# Using npm
+npm install
+```
+
+Start Metro:
+
+```sh
 npm start
-
-# OR using Yarn
-yarn start
 ```
 
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+Run on iOS:
 
 ```sh
-# Using npm
+npm run ios
+```
+
+Run on Android:
+
+```sh
 npm run android
-
-# OR using Yarn
-yarn android
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+Run TypeScript checks:
 
 ```sh
+npx tsc --noEmit
+```
+
+Run ESLint:
+
+```sh
+npm run lint
+```
+
+Run tests:
+
+```sh
+npm test
+```
+
+For iOS, CocoaPods may need to be installed or refreshed after dependency changes:
+
+```sh
+cd ios
 bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
 bundle exec pod install
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+## Supabase / Database Notes
 
-```sh
-# Using npm
-npm run ios
+Yuniee Manager depends on Supabase for its live backend data. The app uses Supabase for core operational tables such as orders, order items, products, stock, stock movements, sales, expenses, packaging materials, product packaging rules, and tasks.
 
-# OR using Yarn
-yarn ios
+Local generated database types live under:
+
+```text
+src/core/supabase/database.types.ts
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+Database migration artifacts live under:
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+```text
+supabase/migrations/
+```
 
-## Step 3: Modify your app
+Before working on database-dependent features, make sure the local generated types, app assumptions, and live Supabase schema are aligned.
 
-Now that you have successfully run the app, let's make changes!
+## Current Status
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+The app is in a near-final internal productization stage. The main owner/admin workflows are implemented and have been polished for daily use:
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+- Orders and delivered flow
+- Stock and product management
+- Packaging materials and packaging rules
+- Finance, sales history, and expenses
+- Kanban To Do
+- Theme and language preferences
+- Settings access
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+Further work should prioritize careful verification, schema-safe changes, and small operational improvements rather than broad redesigns.
 
-## Congratulations! :tada:
+## Notes
 
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+- This app is private and intended only for YUNIEE owner/admin usage.
+- It should not be treated as a public customer app.
+- Do not add schema changes without creating or updating the relevant SQL migration artifact.
+- Do not assume local generated types match the live Supabase schema without verification.
+- Keep changes conservative because the app supports real operational workflows.
