@@ -2,6 +2,7 @@ import React from "react";
 import { NavigationContainer, CommonActions, DarkTheme, DefaultTheme } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { Platform, StyleSheet, View } from "react-native";
 import { supabase } from './src/core/supabase/client';
 import { Session } from '@supabase/supabase-js';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -16,6 +17,7 @@ import ToDo from "./screens/ToDo";
 import Settings from "./screens/Settings";
 import { AppSettingsProvider, useAppSettings } from './src/core/settings/AppSettingsContext';
 import SettingsHeaderButton from './src/components/SettingsHeaderButton';
+import { radii, spacing } from './src/core/design/tokens';
 
 const Tab = createBottomTabNavigator();
 const RootStack = createNativeStackNavigator();
@@ -28,41 +30,84 @@ const TAB_ICONS: Record<string, { focused: string; unfocused: string }> = {
   Finance: { focused: 'wallet', unfocused: 'wallet-outline' },
 };
 
-function renderTabIcon(routeName: string, focused: boolean, color: string, size: number) {
+function TabIcon({
+  routeName,
+  focused,
+  color,
+  activeBackground,
+}: {
+  routeName: string;
+  focused: boolean;
+  color: string;
+  activeBackground: string;
+}) {
   const icons = TAB_ICONS[routeName] || TAB_ICONS.Dashboard;
   const iconName = focused ? icons.focused : icons.unfocused;
-  return <Icon name={iconName} size={size} color={color} />;
+  return (
+    <View
+      style={{
+        width: 44,
+        height: 30,
+        borderRadius: radii.pill,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: focused ? activeBackground : 'transparent',
+      }}
+    >
+      <Icon name={iconName} size={20} color={color} />
+    </View>
+  );
 }
 
 function TabNavigator() {
-  const { colors, t } = useAppSettings();
+  const { colors, t, themeMode } = useAppSettings();
 
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerRight: SettingsHeaderButton,
-        headerStyle: { backgroundColor: colors.surface },
+        headerStyle: {
+          backgroundColor: colors.bg,
+        },
+        headerShadowVisible: false,
         headerTintColor: colors.text,
-        headerTitleStyle: { fontWeight: '800' },
-        tabBarIcon: ({ focused, color, size }) =>
-          renderTabIcon(route.name, focused, color, size),
+        headerTitleStyle: {
+          fontWeight: '800',
+          fontSize: 18,
+          letterSpacing: -0.2,
+          color: colors.text,
+        },
+        headerTitleAlign: 'left',
+        tabBarIcon: ({ focused, color }) => (
+          <TabIcon
+            routeName={route.name}
+            focused={focused}
+            color={color}
+            activeBackground={colors.primarySoft}
+          />
+        ),
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.subtext,
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: '600',
+          fontWeight: '700',
+          marginTop: 2,
+          letterSpacing: 0.2,
+        },
+        tabBarItemStyle: {
+          paddingTop: spacing.sm,
         },
         tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopColor: colors.border,
-          borderTopWidth: 0,
-          elevation: 8,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.06,
-          shadowRadius: 6,
-          height: 88,
-          paddingBottom: 28,
+          backgroundColor: colors.surfaceElevated,
+          borderTopColor: colors.divider,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          elevation: 14,
+          shadowColor: themeMode === 'dark' ? '#000' : '#0b1220',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: themeMode === 'dark' ? 0.4 : 0.08,
+          shadowRadius: 14,
+          height: Platform.OS === 'ios' ? 88 : 70,
+          paddingBottom: Platform.OS === 'ios' ? 28 : 10,
           paddingTop: 8,
         },
       })}
