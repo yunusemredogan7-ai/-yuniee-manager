@@ -199,19 +199,28 @@ function TabNavigator() {
 }
 
 function parseSupabaseUrl(url: string) {
-  const hash = url.split('#')[1];
-  const query = url.split('?')[1];
   const params: Record<string, string> = {};
 
-  const target = hash || query;
-  if (target) {
-    target.split('&').forEach((part) => {
+  const queryString = url.includes('?') ? url.split('?')[1].split('#')[0] : '';
+  if (queryString) {
+    queryString.split('&').forEach((part) => {
       const [key, val] = part.split('=');
       if (key && val) {
         params[key] = decodeURIComponent(val);
       }
     });
   }
+
+  const hashString = url.includes('#') ? url.split('#')[1] : '';
+  if (hashString) {
+    hashString.split('&').forEach((part) => {
+      const [key, val] = part.split('=');
+      if (key && val) {
+        params[key] = decodeURIComponent(val);
+      }
+    });
+  }
+
   return params;
 }
 
@@ -226,16 +235,26 @@ function AppShell() {
     });
 
     const handleDeepLink = async (url: string | null) => {
+      console.log('Incoming Deep Link URL:', url);
       if (!url) return;
       const params = parseSupabaseUrl(url);
+
       if (params.access_token && params.refresh_token) {
-        await supabase.auth.setSession({
+        const { data, error } = await supabase.auth.setSession({
           access_token: params.access_token,
           refresh_token: params.refresh_token,
         });
-        setIsPasswordRecovery(true);
+        if (!error && data.session) {
+          setSession(data.session);
+          setIsPasswordRecovery(true);
+        }
       } else if (params.code) {
-        await supabase.auth.exchangeCodeForSession(params.code);
+        const { data, error } = await supabase.auth.exchangeCodeForSession(params.code);
+        if (!error && data.session) {
+          setSession(data.session);
+          setIsPasswordRecovery(true);
+        }
+      } else if (url.includes('reset-password')) {
         setIsPasswordRecovery(true);
       }
     };
