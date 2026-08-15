@@ -54,9 +54,7 @@ export function Input({
                     {
                         backgroundColor: colors.surfaceSunken,
                         borderColor,
-                        shadowColor: focused ? colors.focusRing : 'transparent',
                     },
-                    focused ? styles.focused : null,
                 ]}
             >
                 {leftAddon ? <View style={styles.addon}>{leftAddon}</View> : null}

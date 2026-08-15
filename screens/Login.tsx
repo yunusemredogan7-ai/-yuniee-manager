@@ -135,6 +135,9 @@ export default function Login() {
                             value={password}
                             onChangeText={setPassword}
                             secureTextEntry={!showPassword}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            textContentType="oneTimeCode"
                             editable={!loading}
                             leftAddon={<Icon name="lock-closed-outline" size={18} color={colors.subtext} />}
                             rightAddon={
