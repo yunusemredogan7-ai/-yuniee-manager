@@ -30,6 +30,13 @@ export default function Login() {
         missing: 'Lütfen e-posta ve şifre girin.',
         loginFailed: 'Giriş başarısız.',
         privateNote: 'Bu özel bir yönetim panelidir. Yalnızca yetkili kullanıcılar.',
+        forgotPasswordBtn: 'Şifremi Unuttum?',
+        forgotTitle: 'Şifreni Sıfırla',
+        forgotSubtitle: 'E-posta adresini gir, şifre sıfırlama bağlantısı gönderelim.',
+        sendResetLink: 'Sıfırlama Bağlantısı Gönder',
+        backToLogin: 'Giriş Ekranına Dön',
+        resetEmailSent: 'Sıfırlama e-postası gönderildi. Lütfen gelen kutunu kontrol et.',
+        emailRequired: 'Lütfen e-posta adresini gir.',
     } : {
         brand: 'YUNIEE MANAGER',
         title: 'Welcome back',
@@ -41,12 +48,21 @@ export default function Login() {
         missing: 'Please enter both email and password.',
         loginFailed: 'Sign-in failed.',
         privateNote: 'Private admin workspace. Authorized users only.',
+        forgotPasswordBtn: 'Forgot Password?',
+        forgotTitle: 'Reset Password',
+        forgotSubtitle: 'Enter your email to receive a reset link.',
+        sendResetLink: 'Send Reset Link',
+        backToLogin: 'Back to Sign In',
+        resetEmailSent: 'Reset link sent! Please check your inbox.',
+        emailRequired: 'Please enter your email address.',
     };
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
+    const [isForgotPassword, setIsForgotPassword] = useState(false);
+    const [forgotSuccess, setForgotSuccess] = useState<string | null>(null);
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
     const slideAnim = useRef(new Animated.Value(16)).current;
@@ -87,12 +103,39 @@ export default function Login() {
         }
     }
 
+    async function handleForgotPassword() {
+        setError(null);
+        setForgotSuccess(null);
+        if (!email) {
+            setError(copy.emailRequired);
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+                redirectTo: 'yunieemanager://reset-password',
+            });
+
+            if (resetError) {
+                setError(resetError.message);
+            } else {
+                setForgotSuccess(copy.resetEmailSent);
+            }
+        } catch (err: any) {
+            console.error('FORGOT PASSWORD ERROR:', err);
+            setError(err?.message || copy.loginFailed);
+        } finally {
+            setLoading(false);
+        }
+    }
+
     return (
         <SafeAreaView style={styles.safeArea}>
             <View style={styles.bgOrnamentTop} pointerEvents="none" />
             <View style={styles.bgOrnamentBottom} pointerEvents="none" />
             <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 style={styles.container}
             >
                 <Animated.View
@@ -111,10 +154,10 @@ export default function Login() {
                     </View>
 
                     <Text style={[typography.display, { color: colors.text, marginTop: spacing.lg }]}>
-                        {copy.title}
+                        {isForgotPassword ? copy.forgotTitle : copy.title}
                     </Text>
                     <Text style={[typography.body, { color: colors.subtext, marginTop: 6 }]}>
-                        {copy.subtitle}
+                        {isForgotPassword ? copy.forgotSubtitle : copy.subtitle}
                     </Text>
 
                     <Card style={styles.formCard} elevated="lg" padding="xl">
@@ -127,43 +170,99 @@ export default function Login() {
                             keyboardType="email-address"
                             editable={!loading}
                             leftAddon={<Icon name="mail-outline" size={18} color={colors.subtext} />}
-                            containerStyle={{ marginBottom: spacing.md }}
-                        />
-                        <Input
-                            label={copy.password}
-                            placeholder={copy.passwordPlaceholder}
-                            value={password}
-                            onChangeText={setPassword}
-                            secureTextEntry={!showPassword}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            textContentType="oneTimeCode"
-                            editable={!loading}
-                            leftAddon={<Icon name="lock-closed-outline" size={18} color={colors.subtext} />}
-                            rightAddon={
-                                <Icon
-                                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                                    size={18}
-                                    color={colors.subtext}
-                                    onPress={() => setShowPassword(s => !s)}
-                                />
-                            }
-                            error={error ?? undefined}
-                            containerStyle={{ marginBottom: spacing.lg }}
+                            containerStyle={{ marginBottom: isForgotPassword ? spacing.lg : spacing.md }}
+                            error={isForgotPassword && error ? error : undefined}
                         />
 
-                        <Button
-                            label={copy.signIn}
-                            onPress={handleLogin}
-                            loading={loading}
-                            size="lg"
-                            fullWidth
-                            rightIcon={
-                                !loading ? (
-                                    <Icon name="arrow-forward" size={18} color={colors.textInverse} />
-                                ) : null
-                            }
-                        />
+                        {!isForgotPassword ? (
+                            <>
+                                <Input
+                                    label={copy.password}
+                                    placeholder={copy.passwordPlaceholder}
+                                    value={password}
+                                    onChangeText={setPassword}
+                                    secureTextEntry={!showPassword}
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    textContentType="oneTimeCode"
+                                    editable={!loading}
+                                    leftAddon={<Icon name="lock-closed-outline" size={18} color={colors.subtext} />}
+                                    rightAddon={
+                                        <Icon
+                                            name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                                            size={18}
+                                            color={colors.subtext}
+                                            onPress={() => setShowPassword(s => !s)}
+                                        />
+                                    }
+                                    error={error ?? undefined}
+                                    containerStyle={{ marginBottom: spacing.xs }}
+                                />
+
+                                <View style={styles.forgotRow}>
+                                    <Text
+                                        style={[typography.caption, { color: colors.primary, fontWeight: '700' }]}
+                                        onPress={() => {
+                                            setError(null);
+                                            setForgotSuccess(null);
+                                            setIsForgotPassword(true);
+                                        }}
+                                    >
+                                        {copy.forgotPasswordBtn}
+                                    </Text>
+                                </View>
+
+                                <Button
+                                    label={copy.signIn}
+                                    onPress={handleLogin}
+                                    loading={loading}
+                                    size="lg"
+                                    fullWidth
+                                    rightIcon={
+                                        !loading ? (
+                                            <Icon name="arrow-forward" size={18} color={colors.textInverse} />
+                                        ) : null
+                                    }
+                                />
+                            </>
+                        ) : (
+                            <>
+                                {forgotSuccess ? (
+                                    <View style={styles.successBox}>
+                                        <Icon name="checkmark-circle-outline" size={24} color={colors.success} />
+                                        <Text style={[typography.body, { color: colors.success, marginTop: spacing.xs, textAlign: 'center' }]}>
+                                            {forgotSuccess}
+                                        </Text>
+                                    </View>
+                                ) : (
+                                    <Button
+                                        label={copy.sendResetLink}
+                                        onPress={handleForgotPassword}
+                                        loading={loading}
+                                        size="lg"
+                                        fullWidth
+                                        rightIcon={
+                                            !loading ? (
+                                                <Icon name="send-outline" size={18} color={colors.textInverse} />
+                                            ) : null
+                                        }
+                                    />
+                                )}
+
+                                <View style={styles.backRow}>
+                                    <Text
+                                        style={[typography.caption, { color: colors.subtext, fontWeight: '700' }]}
+                                        onPress={() => {
+                                            setError(null);
+                                            setForgotSuccess(null);
+                                            setIsForgotPassword(false);
+                                        }}
+                                    >
+                                        ← {copy.backToLogin}
+                                    </Text>
+                                </View>
+                            </>
+                        )}
                     </Card>
 
                     <View style={styles.footerRow}>
@@ -238,6 +337,21 @@ function makeStyles(
         },
         formCard: {
             marginTop: spacing.xxl,
+        },
+        forgotRow: {
+            alignItems: 'flex-end',
+            marginBottom: spacing.md,
+            marginTop: -spacing.xs,
+        },
+        backRow: {
+            alignItems: 'center',
+            marginTop: spacing.md,
+        },
+        successBox: {
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingVertical: spacing.sm,
+            marginBottom: spacing.md,
         },
         footerRow: {
             flexDirection: 'row',

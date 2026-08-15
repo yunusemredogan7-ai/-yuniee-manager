@@ -8,6 +8,8 @@ import { Session } from '@supabase/supabase-js';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 import Login from './screens/Login';
+import ResetPassword from './screens/ResetPassword';
+import { Linking } from 'react-native';
 
 import Dashboard from "./screens/Dashboard";
 import Orders from "./screens/Orders";
@@ -196,8 +198,26 @@ function TabNavigator() {
   );
 }
 
+function parseSupabaseUrl(url: string) {
+  const hash = url.split('#')[1];
+  const query = url.split('?')[1];
+  const params: Record<string, string> = {};
+
+  const target = hash || query;
+  if (target) {
+    target.split('&').forEach((part) => {
+      const [key, val] = part.split('=');
+      if (key && val) {
+        params[key] = decodeURIComponent(val);
+      }
+    });
+  }
+  return params;
+}
+
 function AppShell() {
   const [session, setSession] = React.useState<Session | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = React.useState(false);
   const { colors, themeMode, t } = useAppSettings();
 
   React.useEffect(() => {
@@ -205,16 +225,45 @@ function AppShell() {
       setSession(currentSession);
     });
 
+    const handleDeepLink = async (url: string | null) => {
+      if (!url) return;
+      const params = parseSupabaseUrl(url);
+      if (params.access_token && params.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: params.access_token,
+          refresh_token: params.refresh_token,
+        });
+        setIsPasswordRecovery(true);
+      } else if (params.code) {
+        await supabase.auth.exchangeCodeForSession(params.code);
+        setIsPasswordRecovery(true);
+      }
+    };
+
+    Linking.getInitialURL().then(handleDeepLink);
+
+    const linkingSub = Linking.addEventListener('url', (event) => {
+      handleDeepLink(event.url);
+    });
+
     const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, currentSession) => {
+      (event, currentSession) => {
         setSession(currentSession);
+        if (event === 'PASSWORD_RECOVERY') {
+          setIsPasswordRecovery(true);
+        }
       }
     );
 
     return () => {
+      linkingSub.remove();
       listener.subscription.unsubscribe();
     };
   }, []);
+
+  if (isPasswordRecovery) {
+    return <ResetPassword onSuccess={() => setIsPasswordRecovery(false)} />;
+  }
 
   if (!session) {
     return <Login />;
