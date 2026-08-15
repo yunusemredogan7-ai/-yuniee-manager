@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, SafeAreaView, StatusBar } from 'react-native';
 import { supabase } from '../src/core/supabase/client';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { RADIUS, SHADOW_COLOR, SPACING, TYPOGRAPHY } from '../src/core/theme/tokens';
 
 export default function Login() {
     const { colors, language, themeMode } = useAppSettings();
@@ -84,7 +85,7 @@ export default function Login() {
                         <TextInput
                             style={styles.input}
                             placeholder="user@yuniee.com"
-                            placeholderTextColor="#9CA3AF"
+                            placeholderTextColor={colors.text.secondary}
                             value={email}
                             onChangeText={setEmail}
                             autoCapitalize="none"
@@ -98,7 +99,7 @@ export default function Login() {
                         <TextInput
                             style={styles.input}
                             placeholder={copy.passwordPlaceholder}
-                            placeholderTextColor="#9CA3AF"
+                            placeholderTextColor={colors.text.secondary}
                             value={password}
                             onChangeText={setPassword}
                             secureTextEntry
@@ -106,13 +107,13 @@ export default function Login() {
                         />
                     </View>
 
-                    <TouchableOpacity 
-                        style={[styles.loginButton, loading && styles.loginButtonDisabled]} 
+                    <TouchableOpacity
+                        style={[styles.loginButton, loading && styles.loginButtonDisabled]}
                         onPress={handleLogin}
                         disabled={loading}
                     >
                         {loading ? (
-                            <ActivityIndicator color="#FFFFFF" />
+                            <ActivityIndicator color={colors.bg.page} />
                         ) : (
                             <Text style={styles.loginButtonText}>{copy.signIn}</Text>
                         )}
@@ -127,12 +128,12 @@ function makeStyles(colors: ReturnType<typeof useAppSettings>['colors']) {
 return StyleSheet.create({
     safeArea: {
         flex: 1,
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
     },
     container: {
         flex: 1,
         justifyContent: 'center',
-        paddingHorizontal: 24,
+        paddingHorizontal: SPACING.xl,
     },
     formContainer: {
         width: '100%',
@@ -140,57 +141,58 @@ return StyleSheet.create({
         alignSelf: 'center',
     },
     headerContainer: {
-        marginBottom: 40,
+        marginBottom: SPACING.xxl,
     },
     title: {
-        fontSize: 32,
-        fontWeight: 'bold',
-        color: colors.text,
-        marginBottom: 8,
+        ...TYPOGRAPHY.title,
+        color: colors.text.primary,
+        marginBottom: SPACING.sm,
     },
     subtitle: {
-        fontSize: 16,
-        color: colors.subtext,
+        ...TYPOGRAPHY.body,
+        color: colors.text.secondary,
     },
     inputGroup: {
-        marginBottom: 20,
+        marginBottom: SPACING.lg,
     },
     label: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: colors.text,
-        marginBottom: 8,
+        ...TYPOGRAPHY.label,
+        color: colors.text.primary,
+        marginBottom: SPACING.sm,
     },
     input: {
-        backgroundColor: colors.surfaceMuted,
+        backgroundColor: colors.bg.raised,
         borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: 12,
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-        fontSize: 16,
-        color: colors.text,
+        borderColor: colors.border.default,
+        // Inputs are controls: RADIUS.sm, not RADIUS.md.
+        borderRadius: RADIUS.sm,
+        paddingHorizontal: SPACING.lg,
+        paddingVertical: SPACING.md,
+        ...TYPOGRAPHY.body,
+        color: colors.text.primary,
     },
     loginButton: {
-        backgroundColor: colors.text,
-        borderRadius: 12,
-        paddingVertical: 16,
+        // A deliberately monochrome CTA: fills with the theme's primary
+        // text color and reads with the theme's page color, so it inverts
+        // cleanly in both light and dark instead of using the brand accent.
+        backgroundColor: colors.text.primary,
+        borderRadius: RADIUS.sm,
+        paddingVertical: SPACING.lg,
         alignItems: 'center',
         justifyContent: 'center',
-        marginTop: 12,
-        shadowColor: '#000',
+        marginTop: SPACING.md,
+        shadowColor: SHADOW_COLOR,
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.1,
         shadowRadius: 4,
         elevation: 2,
     },
     loginButtonDisabled: {
-        backgroundColor: '#9CA3AF',
+        opacity: 0.5,
     },
     loginButtonText: {
-        color: '#FFFFFF',
-        fontSize: 16,
-        fontWeight: 'bold',
+        ...TYPOGRAPHY.label,
+        color: colors.bg.page,
     },
 });
 }

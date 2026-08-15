@@ -1,18 +1,23 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
     View,
     Text,
     StyleSheet,
     ScrollView,
-    ActivityIndicator,
     RefreshControl,
-    TouchableOpacity,
 } from 'react-native';
 import { supabase } from '../src/core/supabase/client';
 import { ordersService } from '../src/services/ordersService';
 import { dashboardService, TimeRange } from '../src/services/dashboardService';
+import { notificationService } from '../src/services/notificationService';
+import { productsService } from '../src/services/productsService';
+import { Task, todoService } from '../src/services/todoService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { EmptyState, LoadingSkeleton, NotificationCenter, SectionHeader, SegmentedControl, StatusBadge, SyncStatus, WarningCard } from '../src/components/ui';
+import { AppNotification } from '../src/core/notifications/notificationTypes';
+import { RADIUS, SPACING } from '../src/core/theme/tokens';
 
 type TodayOverview = {
     orders: number;
@@ -37,8 +42,13 @@ type RecentOrder = {
     customer_name: string;
     items: string[];
     status: string;
+    source: string | null;
     total_price: number;
 };
+
+const FOCUS_FRESH_MS = 15000;
+const SECONDARY_LOAD_DELAY_MS = 80;
+const REALTIME_DEBOUNCE_MS = 450;
 
 export default function Dashboard() {
     const { colors, language, themeMode } = useAppSettings();
@@ -67,6 +77,11 @@ export default function Dashboard() {
             Delivered: 'Teslim Edildi',
             Cancelled: 'İptal Edildi',
         },
+        needsAttention: 'Dikkat Gerekenler',
+        ordersWaiting: 'Hazırlık veya kargo akışında bekleyen siparişler var.',
+        noPriorities: 'Bugün için kritik uyarı yok.',
+        synced: 'Senkron',
+        refreshing: 'Yenileniyor...',
     } : {
         title: 'Yuniee Manager',
         today: 'Today',
@@ -91,9 +106,18 @@ export default function Dashboard() {
             Delivered: 'Delivered',
             Cancelled: 'Cancelled',
         },
+        needsAttention: 'Needs Attention',
+        ordersWaiting: 'Some orders are still in the preparation or shipping flow.',
+        noPriorities: 'No critical alerts for today.',
+        synced: 'Synced',
+        refreshing: 'Refreshing...',
     };
+    const navigation = useNavigation<any>();
     const [loading, setLoading] = useState(true);
+    const [hasLoaded, setHasLoaded] = useState(false);
+    const [secondaryLoading, setSecondaryLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
     const [range, setRange] = useState<TimeRange>('today');
 
     const [overview, setOverview] = useState<TodayOverview>({
@@ -105,69 +129,121 @@ export default function Dashboard() {
     const [lowStock, setLowStock] = useState<LowStockProduct[]>([]);
     const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
     const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
+    const [sharedTasks, setSharedTasks] = useState<Task[]>([]);
+    const [missingCostProducts, setMissingCostProducts] = useState<{ id: number; name: string; cost: number }[]>([]);
+    const fetchingRef = useRef(false);
+    const hasLoadedRef = useRef(false);
+    const lastFetchRef = useRef(0);
+    const lastFetchRangeRef = useRef<TimeRange | null>(null);
+    const realtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const fetchAll = useCallback(async () => {
+    const fetchAll = useCallback(async (force = false) => {
+        const now = Date.now();
+        if (!force && hasLoadedRef.current && lastFetchRangeRef.current === range && now - lastFetchRef.current < FOCUS_FRESH_MS) {
+            return;
+        }
+        if (fetchingRef.current) return;
+        fetchingRef.current = true;
+        setSecondaryLoading(true);
         try {
-            const ordersCount = await dashboardService.getOrdersCount(range);
-            const revenue = await dashboardService.getRevenue(range);
-            const profit = await dashboardService.getProfit(range);
-            const itemsSold = await dashboardService.getItemsSold(range);
+            await Promise.all([
+                dashboardService.getOrdersCount(range),
+                dashboardService.getRevenue(range),
+                dashboardService.getProfit(range),
+                dashboardService.getItemsSold(range),
+            ]).then(([ordersCount, revenue, profit, itemsSold]) => {
+                setOverview({ orders: ordersCount, revenue, profit, itemsSold });
+                setHasLoaded(true);
+                hasLoadedRef.current = true;
+                setLoading(false);
+            });
 
-            setOverview({ orders: ordersCount, revenue, profit, itemsSold });
+            await new Promise<void>(resolve => setTimeout(() => resolve(), SECONDARY_LOAD_DELAY_MS));
 
-            const { data: low } = await dashboardService.getLowStockProducts();
-            if (low) setLowStock(low as unknown as LowStockProduct[]);
+            await Promise.all([
+                dashboardService.getLowStockProducts(),
+                dashboardService.getTopSellingProducts(range),
+                ordersService.getOrders(10),
+                todoService.getTasks('yuniee'),
+                productsService.getProducts(),
+            ]).then(([low, top, recent, tasks, products]) => {
+                if (low.data) setLowStock(low.data as unknown as LowStockProduct[]);
 
-            const { data: top } = await dashboardService.getTopSellingProducts(range);
-            if (top) setTopProducts(top as unknown as TopProduct[]);
+                if (top.data) setTopProducts(top.data as unknown as TopProduct[]);
 
-            const { data: recent } = await ordersService.getOrders(10);
-            if (recent) {
-                const mappedOrders = recent.map(o => {
-                    const orderItems = Array.isArray(o.order_items) ? o.order_items : [];
-                    const itemStrings = orderItems.map((item: Record<string, unknown>) => {
-                        const prodData = item.products as Record<string, unknown> | null;
-                        const productName = prodData ? String(prodData.name || 'Unknown') : 'Unknown';
-                        const size = String(item.size || '');
-                        const qty = Number(item.quantity || 0);
-                        return `${productName} — ${size} × ${qty}`;
+                if (recent.data) {
+                    const mappedOrders = recent.data.map(o => {
+                        const orderItems = Array.isArray(o.order_items) ? o.order_items : [];
+                        const itemStrings = orderItems.map((item: Record<string, unknown>) => {
+                            const prodData = item.products as Record<string, unknown> | null;
+                            const productName = prodData ? String(prodData.name || 'Unknown') : 'Unknown';
+                            const size = String(item.size || '');
+                            const qty = Number(item.quantity || 0);
+                            return `${productName} — ${size} × ${qty}`;
+                        });
+                        return {
+                            id: Number(o.id),
+                            customer_name: String(o.customer_name || 'Unknown'),
+                            items: itemStrings.length > 0 ? itemStrings : [copy.noItems],
+                            status: String(o.status || 'Unknown'),
+                            source: o.source ? String(o.source) : null,
+                            total_price: Number(o.total_price) || 0,
+                        };
                     });
-                    return {
-                        id: Number(o.id),
-                        customer_name: String(o.customer_name || 'Unknown'),
-                        items: itemStrings.length > 0 ? itemStrings : [copy.noItems],
-                        status: String(o.status || 'Unknown'),
-                        total_price: Number(o.total_price) || 0,
-                    };
-                });
-                setRecentOrders(mappedOrders);
-            }
+                    setRecentOrders(mappedOrders);
+                }
+                if (tasks.data) setSharedTasks(tasks.data);
+
+                if (products.data) {
+                    setMissingCostProducts(products.data
+                        .filter(product => Number(product.cost) <= 0)
+                        .map(product => ({ id: product.id, name: product.name, cost: product.cost })));
+                }
+            }).finally(() => setSecondaryLoading(false));
+            setLastUpdated(new Date());
+            lastFetchRef.current = Date.now();
+            lastFetchRangeRef.current = range;
         } catch (error) {
             console.log('Dashboard fetchAll error:', error);
+        } finally {
+            fetchingRef.current = false;
+            setLoading(false);
+            setSecondaryLoading(false);
         }
     }, [copy.noItems, range]);
 
     useFocusEffect(
         useCallback(() => {
-            setLoading(true);
+            if (!hasLoadedRef.current) setLoading(true);
             fetchAll().finally(() => setLoading(false));
         }, [fetchAll])
     );
 
+    const scheduleRealtimeFetch = useCallback(() => {
+        if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
+        realtimeTimerRef.current = setTimeout(() => {
+            realtimeTimerRef.current = null;
+            fetchAll(true);
+        }, REALTIME_DEBOUNCE_MS);
+    }, [fetchAll]);
+
     useEffect(() => {
         const channel = supabase
             .channel('dashboard-realtime')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => fetchAll())
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, () => fetchAll())
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'stock' }, () => fetchAll())
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, scheduleRealtimeFetch)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, scheduleRealtimeFetch)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'stock' }, scheduleRealtimeFetch)
             .subscribe();
 
-        return () => { supabase.removeChannel(channel); };
-    }, [fetchAll]);
+        return () => {
+            if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
+            supabase.removeChannel(channel);
+        };
+    }, [scheduleRealtimeFetch]);
 
     const onRefresh = useCallback(async () => {
         setRefreshing(true);
-        await fetchAll();
+        await fetchAll(true);
         setRefreshing(false);
     }, [fetchAll]);
 
@@ -177,29 +253,24 @@ export default function Dashboard() {
         month: copy.month,
     };
 
-    function getStatusStyle(status: string) {
-        switch (status) {
-            case 'Preparing': return { bg: '#FEF3C7', text: '#92400E' };
-            case 'Ready': return { bg: '#E0E7FF', text: '#3730A3' };
-            case 'Shipped': return { bg: '#DBEAFE', text: '#1E40AF' };
-            case 'Delivered': return { bg: '#D1FAE5', text: '#065F46' };
-            case 'Cancelled': return { bg: '#FEE2E2', text: '#991B1B' };
-            default: return { bg: '#F3F4F6', text: '#555' };
-        }
-    }
-
     function getStatusLabel(status: string) {
         const normalized = Object.keys(copy.statusLabels).find(s => s.toLowerCase() === status.toLowerCase()) as keyof typeof copy.statusLabels | undefined;
         return normalized ? copy.statusLabels[normalized] : status;
     }
 
-    if (loading) {
-        return (
-            <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.primary} />
-            </View>
-        );
-    }
+    const attentionOrders = recentOrders.filter(order => !['Delivered', 'Cancelled'].includes(order.status));
+    const notifications: AppNotification[] = [
+        ...notificationService.buildOrderNotifications(recentOrders),
+        ...notificationService.buildLowStockNotifications(lowStock),
+        ...notificationService.buildTaskNotifications(sharedTasks),
+        ...notificationService.buildProductCostNotifications(missingCostProducts),
+    ].sort((a, b) => {
+        const weight = { danger: 0, warning: 1, info: 2, success: 3 };
+        return weight[a.severity] - weight[b.severity];
+    });
+
+    const firstLoad = loading && !hasLoaded;
+    const secondaryFirstLoad = secondaryLoading && !lastUpdated;
 
     return (
         <ScrollView
@@ -210,57 +281,77 @@ export default function Dashboard() {
             }
         >
             {/* ── Header ── */}
-            <Text style={styles.title}>{copy.title}</Text>
+            <View style={styles.titleRow}>
+                <Text style={styles.title}>{copy.title}</Text>
+                <SyncStatus timestamp={lastUpdated} syncing={refreshing || loading || secondaryLoading} label={copy.synced} syncingLabel={copy.refreshing} />
+            </View>
 
             {/* ── Time Range ── */}
-            <View style={styles.rangeSelector}>
-                {(['today', 'week', 'month'] as TimeRange[]).map((r) => (
-                    <TouchableOpacity
-                        key={r}
-                        style={[styles.rangePill, range === r && styles.rangePillActive]}
-                        onPress={() => setRange(r)}
-                    >
-                        <Text style={[styles.rangePillText, range === r && styles.rangePillTextActive]}>
-                            {rangeLabels[r]}
-                        </Text>
-                    </TouchableOpacity>
-                ))}
-            </View>
+            <SegmentedControl
+                value={range}
+                onChange={setRange}
+                options={(['today', 'week', 'month'] as TimeRange[]).map(r => ({ value: r, label: rangeLabels[r] }))}
+            />
+
+            {firstLoad || secondaryFirstLoad ? (
+                <LoadingSkeleton rows={2} style={styles.sectionSkeleton} />
+            ) : attentionOrders.length > 0 ? (
+                <WarningCard
+                    title={`${attentionOrders.length} ${copy.needsAttention}`}
+                    description={copy.ordersWaiting}
+                    tone="warning"
+                    style={styles.dashboardWarning}
+                />
+            ) : null}
+
+            {!firstLoad && !secondaryFirstLoad ? (
+                <NotificationCenter
+                    title={copy.needsAttention}
+                    emptyText={copy.noPriorities}
+                    notifications={notifications}
+                    onPressItem={(item) => {
+                        if (item.target?.screen) navigation.navigate(item.target.screen);
+                    }}
+                />
+            ) : null}
 
             {/* ── KPI Grid ── */}
-            <View style={styles.kpiGrid}>
-                <View style={[styles.kpiCard, styles.kpiCardOrders]}>
-                    <Text style={styles.kpiLabel}>{copy.orders}</Text>
-                    <Text style={styles.kpiValue}>{overview.orders}</Text>
+            {firstLoad ? (
+                <LoadingSkeleton rows={4} variant="metric" style={styles.loadingContent} />
+            ) : (
+                <View style={styles.kpiGrid}>
+                    <View style={styles.kpiCard}>
+                        <Text style={styles.kpiLabel}>{copy.orders}</Text>
+                        <Text style={styles.kpiValue}>{overview.orders}</Text>
+                    </View>
+                    <View style={styles.kpiCard}>
+                        <Text style={styles.kpiLabel}>{copy.revenue}</Text>
+                        <Text style={styles.kpiValue}>{overview.revenue.toLocaleString()}₺</Text>
+                    </View>
+                    <View style={styles.kpiCard}>
+                        <Text style={styles.kpiLabel}>{copy.itemsSold}</Text>
+                        <Text style={styles.kpiValue}>{overview.itemsSold}</Text>
+                    </View>
+                    {/* Profit is the only KPI tile whose color is real status (its sign), not decoration. */}
+                    <View style={[styles.kpiCard, overview.profit >= 0 ? styles.kpiCardProfitPositive : styles.kpiCardProfitNegative]}>
+                        <Text style={styles.kpiLabel}>{copy.profit}</Text>
+                        <Text style={[
+                            styles.kpiValue,
+                            overview.profit >= 0 ? styles.profitPositive : styles.profitNegative,
+                        ]}>
+                            {overview.profit >= 0 ? '' : '−'}{Math.abs(overview.profit).toLocaleString()}₺
+                        </Text>
+                    </View>
                 </View>
-                <View style={[styles.kpiCard, styles.kpiCardRevenue]}>
-                    <Text style={styles.kpiLabel}>{copy.revenue}</Text>
-                    <Text style={styles.kpiValue}>{overview.revenue.toLocaleString()}₺</Text>
-                </View>
-                <View style={[styles.kpiCard, styles.kpiCardItems]}>
-                    <Text style={styles.kpiLabel}>{copy.itemsSold}</Text>
-                    <Text style={styles.kpiValue}>{overview.itemsSold}</Text>
-                </View>
-                <View style={[styles.kpiCard, styles.kpiCardProfit]}>
-                    <Text style={styles.kpiLabel}>{copy.profit}</Text>
-                    <Text style={[
-                        styles.kpiValue,
-                        overview.profit >= 0 ? styles.profitPositive : styles.profitNegative,
-                    ]}>
-                        {overview.profit >= 0 ? '' : '−'}{Math.abs(overview.profit).toLocaleString()}₺
-                    </Text>
-                </View>
-            </View>
+            )}
 
             {/* ── Low Stock ── */}
             {lowStock.length > 0 && (
                 <View style={styles.section}>
-                    <View style={styles.sectionHeaderRow}>
-                        <Text style={styles.sectionTitle}>{copy.lowStock}</Text>
-                        <View style={styles.alertBadge}>
-                            <Text style={styles.alertBadgeText}>{lowStock.length}</Text>
-                        </View>
-                    </View>
+                    <SectionHeader
+                        title={copy.lowStock}
+                        right={<StatusBadge label={String(lowStock.length)} tone="danger" />}
+                    />
                     {lowStock.map((item) => {
                         const isCritical = item.totalStock <= 3;
                         return (
@@ -278,7 +369,7 @@ export default function Dashboard() {
                 </View>
             )}
 
-            {lowStock.length === 0 && (
+            {!firstLoad && lowStock.length === 0 && (
                 <View style={styles.wellStockedBanner}>
                     <Text style={styles.wellStockedText}>{copy.wellStocked}</Text>
                 </View>
@@ -287,7 +378,7 @@ export default function Dashboard() {
             {/* ── Top Selling ── */}
             {topProducts.length > 0 && (
                 <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>{copy.topProducts}</Text>
+                    <SectionHeader title={copy.topProducts} />
                     {topProducts.map((item, index) => (
                         <View key={item.product_name} style={styles.topRow}>
                             <View style={styles.topRankCircle}>
@@ -302,14 +393,17 @@ export default function Dashboard() {
 
             {/* ── Recent Orders ── */}
             <View style={styles.section}>
-                <Text style={styles.sectionTitle}>{copy.recentOrders}</Text>
-                {recentOrders.length === 0 ? (
-                    <View style={styles.emptyBlock}>
-                        <Text style={styles.emptyText}>{copy.noOrders}</Text>
-                    </View>
+                <SectionHeader title={copy.recentOrders} />
+                {firstLoad || secondaryFirstLoad ? (
+                    <LoadingSkeleton rows={3} />
+                ) : recentOrders.length === 0 ? (
+                    <EmptyState
+                        icon="□"
+                        title={copy.noOrders}
+                        description={language === 'tr' ? 'Yeni siparişler burada görünecek.' : 'New operational orders will appear here.'}
+                    />
                 ) : (
                     recentOrders.map((order) => {
-                        const statusStyle = getStatusStyle(order.status);
                         return (
                             <View key={order.id} style={styles.recentOrderRow}>
                                 <View style={styles.recentOrderLeft}>
@@ -319,11 +413,10 @@ export default function Dashboard() {
                                     </Text>
                                 </View>
                                 <View style={styles.recentOrderRight}>
-                                    <View style={[styles.miniStatusBadge, { backgroundColor: statusStyle.bg }]}>
-                                        <Text style={[styles.miniStatusText, { color: statusStyle.text }]}>
-                                            {getStatusLabel(order.status)}
-                                        </Text>
-                                    </View>
+                                    <StatusBadge
+                                        label={getStatusLabel(order.status)}
+                                        tone={order.status === 'Delivered' ? 'success' : order.status === 'Cancelled' ? 'danger' : 'primary'}
+                                    />
                                     <Text style={styles.recentOrderPrice}>
                                         {order.total_price.toLocaleString()}₺
                                     </Text>
@@ -340,291 +433,180 @@ export default function Dashboard() {
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
-    loaderContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: colors.bg,
-    },
     container: {
         flex: 1,
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
     },
     content: {
-        padding: 20,
+        padding: SPACING.lg,
+    },
+    loadingContent: { width: '100%' },
+    sectionSkeleton: {
+        marginBottom: SPACING.lg,
     },
     title: {
-        fontSize: 26,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.5,
-        marginBottom: 20,
+        ...v.type.title,
+        color: colors.text.primary,
     },
-    // ── Range selector ──
-    rangeSelector: {
+    titleRow: {
         flexDirection: 'row',
-        backgroundColor: colors.surfaceMuted,
-        borderRadius: 10,
-        padding: 3,
-        marginBottom: 20,
-    },
-    rangePill: {
-        flex: 1,
-        paddingVertical: 9,
-        alignItems: 'center',
-        borderRadius: 8,
-    },
-    rangePillActive: {
-        backgroundColor: themeMode === 'dark' ? '#252b4a' : '#f4f6ff',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.08,
-        shadowRadius: 3,
-        elevation: 2,
-    },
-    rangePillText: {
-        fontSize: 13,
-        fontWeight: '600',
-        color: colors.subtext,
-    },
-    rangePillTextActive: {
-        color: colors.text,
-        fontWeight: '700',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        gap: SPACING.md,
+        marginBottom: SPACING.xl,
     },
     // ── KPI Grid ──
+    dashboardWarning: {
+        marginBottom: SPACING.xl,
+    },
     kpiGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 10,
-        marginBottom: 24,
+        gap: SPACING.md,
+        marginBottom: SPACING.xl,
     },
     kpiCard: {
         width: '47%' as unknown as number,
-        backgroundColor: colors.surface,
-        borderRadius: 14,
-        padding: 16,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 3,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.card,
     },
-    kpiCardOrders: {
-        backgroundColor: themeMode === 'dark' ? '#182338' : '#f3f7ff',
-        borderColor: themeMode === 'dark' ? '#34466b' : '#dbe8ff',
+    // Profit is the only KPI tile whose color is real status (its sign),
+    // not decoration — Orders/Revenue/Items Sold stay on the plain card.
+    kpiCardProfitPositive: {
+        ...v.successSurface,
     },
-    kpiCardRevenue: {
-        backgroundColor: themeMode === 'dark' ? '#17291f' : '#f2fbf5',
-        borderColor: themeMode === 'dark' ? '#335f44' : '#d7f0df',
-    },
-    kpiCardItems: {
-        backgroundColor: themeMode === 'dark' ? '#2f2418' : '#fff7ed',
-        borderColor: themeMode === 'dark' ? '#6f4e26' : '#fed7aa',
-    },
-    kpiCardProfit: {
-        borderLeftWidth: 3,
-        borderLeftColor: '#4f9d78',
-        backgroundColor: themeMode === 'dark' ? '#1d242d' : '#f8fafc',
+    kpiCardProfitNegative: {
+        ...v.dangerSurface,
     },
     kpiLabel: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: colors.subtext,
+        ...v.type.label,
+        color: colors.text.secondary,
         textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        marginBottom: 6,
+        marginBottom: SPACING.xs,
     },
     kpiValue: {
-        fontSize: 24,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.5,
+        ...v.type.title,
+        color: colors.text.primary,
     },
-    profitPositive: { color: colors.success },
-    profitNegative: { color: colors.danger },
+    profitPositive: { color: colors.status.success.fg },
+    profitNegative: { color: colors.status.danger.fg },
     // ── Sections ──
     section: {
-        marginBottom: 24,
-    },
-    sectionHeaderRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        marginBottom: 10,
-    },
-    sectionTitle: {
-        fontSize: 15,
-        fontWeight: '700',
-        color: colors.text,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        marginBottom: 10,
+        marginBottom: SPACING.xl,
     },
     // ── Low stock ──
-    alertBadge: {
-        backgroundColor: colors.danger,
-        borderRadius: 10,
-        paddingHorizontal: 7,
-        paddingVertical: 2,
-        marginBottom: 10,
-    },
-    alertBadgeText: {
-        color: '#fff',
-        fontSize: 11,
-        fontWeight: '700',
-    },
     stockAlertRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        backgroundColor: colors.surface,
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 6,
-        borderWidth: 1,
-        borderColor: '#fee2e2',
+        ...v.cardCompact,
+        padding: SPACING.md,
+        marginBottom: SPACING.sm,
+        borderColor: colors.status.danger.bg,
     },
     stockAlertCritical: {
-        backgroundColor: themeMode === 'dark' ? '#352026' : '#fef2f2',
-        borderColor: themeMode === 'dark' ? '#6f3038' : '#fca5a5',
+        ...v.dangerSurface,
     },
     stockAlertLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
+        gap: SPACING.sm,
     },
     severityDot: {
         width: 8,
         height: 8,
-        borderRadius: 4,
+        borderRadius: RADIUS.pill,
     },
-    dotRed: { backgroundColor: colors.danger },
-    dotYellow: { backgroundColor: colors.warning },
+    dotRed: { backgroundColor: colors.status.danger.fg },
+    dotYellow: { backgroundColor: colors.status.warning.fg },
     stockAlertName: {
-        fontSize: 14,
+        ...v.type.body,
         fontWeight: '600',
-        color: colors.text,
+        color: colors.text.primary,
     },
     stockAlertQty: {
-        fontSize: 13,
-        fontWeight: '700',
-        color: colors.danger,
+        ...v.type.label,
+        color: colors.status.danger.fg,
     },
     stockAlertQtyCritical: {
-        color: colors.danger,
+        color: colors.status.danger.fg,
     },
     wellStockedBanner: {
-        backgroundColor: themeMode === 'dark' ? '#183025' : '#f0fdf4',
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 24,
+        ...v.successSurface,
+        borderRadius: RADIUS.md,
+        padding: SPACING.md,
+        marginBottom: SPACING.xl,
         alignItems: 'center',
         borderWidth: 1,
-        borderColor: themeMode === 'dark' ? '#2e6b4d' : '#bbf7d0',
     },
     wellStockedText: {
-        fontSize: 13,
-        fontWeight: '600',
-        color: colors.success,
+        ...v.type.label,
+        color: colors.status.success.fg,
     },
     // ── Top selling ──
     topRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: colors.surface,
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 6,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.cardCompact,
+        marginBottom: SPACING.sm,
     },
     topRankCircle: {
         width: 26,
         height: 26,
-        borderRadius: 13,
-        backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff',
+        borderRadius: RADIUS.pill,
+        backgroundColor: colors.bg.raised,
         alignItems: 'center',
         justifyContent: 'center',
-        marginRight: 10,
+        marginRight: SPACING.sm,
     },
     topRankText: {
-        fontSize: 12,
-        fontWeight: '700',
-        color: colors.primary,
+        ...v.type.label,
+        color: colors.text.primary,
     },
     topName: {
         flex: 1,
-        fontSize: 14,
+        ...v.type.body,
         fontWeight: '600',
-        color: colors.text,
+        color: colors.text.primary,
     },
     topQty: {
-        fontSize: 13,
-        color: colors.subtext,
-        fontWeight: '600',
+        ...v.type.label,
+        color: colors.text.secondary,
     },
     // ── Recent orders ──
     recentOrderRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        backgroundColor: colors.surface,
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 6,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.cardCompact,
+        marginBottom: SPACING.sm,
     },
     recentOrderLeft: {
         flex: 1,
-        marginRight: 12,
+        marginRight: SPACING.md,
     },
     recentOrderCustomer: {
-        fontSize: 14,
+        ...v.type.body,
         fontWeight: '700',
-        color: colors.text,
+        color: colors.text.primary,
     },
     recentOrderItems: {
-        fontSize: 12,
-        color: colors.subtext,
-        marginTop: 2,
+        ...v.type.caption,
+        color: colors.text.secondary,
+        marginTop: SPACING.xs,
     },
     recentOrderRight: {
         alignItems: 'flex-end',
-        gap: 4,
-    },
-    miniStatusBadge: {
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: 6,
-    },
-    miniStatusText: {
-        fontSize: 11,
-        fontWeight: '700',
+        gap: SPACING.xs,
     },
     recentOrderPrice: {
-        fontSize: 14,
+        ...v.type.body,
         fontWeight: '700',
-        color: colors.text,
-    },
-    // ── Empty ──
-    emptyBlock: {
-        alignItems: 'center',
-        paddingVertical: 20,
-        backgroundColor: colors.surface,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: colors.border,
-    },
-    emptyText: {
-        color: colors.subtext,
-        fontSize: 14,
+        color: colors.text.primary,
     },
     bottomSpacer: {
-        height: 40,
+        height: SPACING.xxl + SPACING.sm,
     },
 });
 }

@@ -4,17 +4,20 @@ import {
     Text,
     StyleSheet,
     FlatList,
-    ActivityIndicator,
     TouchableOpacity,
     Alert,
     Modal,
     TextInput,
     KeyboardAvoidingView,
     Platform,
-    ScrollView
+    ScrollView,
+    RefreshControl
 } from 'react-native';
 import { costService, PackagingMaterial } from '../src/services/costService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { ConfirmDialog, EmptyState, FilterChip, LoadingSkeleton, StatusBadge, SyncStatus } from '../src/components/ui';
+import { OVERLAY_SCRIM, RADIUS, SPACING } from '../src/core/theme/tokens';
 
 const UNIT_TYPES = ['piece', 'meter', 'gram', 'pack'] as const;
 
@@ -48,6 +51,10 @@ export default function PackagingMaterials() {
         deleteTitle: 'Malzemeyi Sil',
         deleteWarning: 'Bu işlem mevcut ürün reçetelerini etkileyebilir. Devam edilsin mi?',
         deleteFailed: 'Malzeme silinemedi',
+        all: 'Tümü',
+        synced: 'Senkron',
+        refreshing: 'Yenileniyor...',
+        saving: 'Kaydediliyor...',
     } : {
         title: 'Packaging Materials',
         subtitle: 'Define supply items and their costs',
@@ -75,6 +82,10 @@ export default function PackagingMaterials() {
         deleteTitle: 'Delete Material',
         deleteWarning: 'This may break existing product recipes. Continue?',
         deleteFailed: 'Could not delete material',
+        all: 'All',
+        synced: 'Synced',
+        refreshing: 'Refreshing...',
+        saving: 'Saving...',
     };
     const unitLabels: Record<string, string> = language === 'tr'
         ? { piece: 'adet', meter: 'metre', gram: 'gram', pack: 'paket' }
@@ -82,6 +93,11 @@ export default function PackagingMaterials() {
     const getUnitLabel = (unit: string) => unitLabels[unit] || unit;
     const [materials, setMaterials] = useState<PackagingMaterial[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [deleteId, setDeleteId] = useState<number | null>(null);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+    const [activeFilter, setActiveFilter] = useState<'all' | 'active' | 'inactive'>('all');
     
     const [modalVisible, setModalVisible] = useState(false);
     const [editingId, setEditingId] = useState<number | null>(null);
@@ -89,19 +105,26 @@ export default function PackagingMaterials() {
     const [unitType, setUnitType] = useState('piece');
     const [unitCost, setUnitCost] = useState('');
 
-    const fetchMaterials = useCallback(async () => {
-        setLoading(true);
+    const fetchMaterials = useCallback(async (showLoader = true) => {
+        if (showLoader) setLoading(true);
         const { data, error } = await costService.getPackagingMaterials();
         if (error) {
             Alert.alert(copy.error, copy.loadFailed);
         } else if (data) {
             setMaterials(data as PackagingMaterial[]);
+            setLastUpdated(new Date());
         }
         setLoading(false);
+        setRefreshing(false);
     }, [copy.error, copy.loadFailed]);
 
     useEffect(() => {
         fetchMaterials();
+    }, [fetchMaterials]);
+
+    const onRefresh = useCallback(() => {
+        setRefreshing(true);
+        fetchMaterials(false);
     }, [fetchMaterials]);
 
     const toggleActive = async (id: number, currentStatus: boolean) => {
@@ -130,6 +153,7 @@ export default function PackagingMaterials() {
     };
 
     const handleSave = async () => {
+        if (saving) return;
         if (!name.trim() || !unitType.trim() || !unitCost.trim()) {
             Alert.alert(copy.error, copy.fillFields);
             return;
@@ -141,7 +165,7 @@ export default function PackagingMaterials() {
             return;
         }
 
-        setLoading(true);
+        setSaving(true);
         if (editingId) {
             const { error } = await costService.updatePackagingMaterial(editingId, {
                 name: name.trim(),
@@ -160,25 +184,38 @@ export default function PackagingMaterials() {
             if (error) Alert.alert(copy.error, copy.createFailed);
             else fetchMaterials();
         }
+        setSaving(false);
         setModalVisible(false);
     };
 
     const handleDelete = (id: number) => {
-        Alert.alert(copy.deleteTitle, copy.deleteWarning, [
-            { text: copy.cancel, style: 'cancel' },
-            { text: copy.delete, style: 'destructive', onPress: async () => {
-                setLoading(true);
-                const { success } = await costService.deletePackagingMaterial(id);
-                if (!success) Alert.alert(copy.error, copy.deleteFailed);
-                fetchMaterials();
-            }}
-        ]);
+        setDeleteId(id);
     };
+
+    const confirmDelete = async () => {
+        if (!deleteId) return;
+        const id = deleteId;
+        setDeleteId(null);
+        setLoading(true);
+        const { success } = await costService.deletePackagingMaterial(id);
+        if (!success) Alert.alert(copy.error, copy.deleteFailed);
+        fetchMaterials();
+    };
+
+    const filteredMaterials = React.useMemo(() => {
+        return materials.filter(material => {
+            const matchesActive =
+                activeFilter === 'all' ||
+                (activeFilter === 'active' && material.active) ||
+                (activeFilter === 'inactive' && !material.active);
+            return matchesActive;
+        });
+    }, [activeFilter, materials]);
 
     if (loading) {
         return (
             <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.primary} />
+                <LoadingSkeleton rows={4} style={styles.loadingContent} />
             </View>
         );
     }
@@ -191,15 +228,28 @@ export default function PackagingMaterials() {
             <TouchableOpacity style={styles.addButton} onPress={openCreateModal}>
                 <Text style={styles.addButtonText}>{copy.newMaterial}</Text>
             </TouchableOpacity>
+            <SyncStatus timestamp={lastUpdated} syncing={refreshing || loading} label={copy.synced} syncingLabel={copy.refreshing} style={styles.syncStatus} />
+            <View style={styles.tools}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                    <FilterChip label={copy.all} selected={activeFilter === 'all'} onPress={() => setActiveFilter('all')} count={materials.length} />
+                    <FilterChip label={copy.active} selected={activeFilter === 'active'} onPress={() => setActiveFilter(activeFilter === 'active' ? 'all' : 'active')} tone="success" count={materials.filter(m => m.active).length} />
+                    <FilterChip label={copy.inactive} selected={activeFilter === 'inactive'} onPress={() => setActiveFilter(activeFilter === 'inactive' ? 'all' : 'inactive')} count={materials.filter(m => !m.active).length} />
+                </ScrollView>
+            </View>
 
             <FlatList
-                data={materials}
+                data={filteredMaterials}
                 keyExtractor={(item) => String(item.id)}
                 contentContainerStyle={styles.listContent}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
                 ListEmptyComponent={
-                    <View style={styles.emptyBlock}>
-                        <Text style={styles.emptyText}>{copy.empty}</Text>
-                    </View>
+                    <EmptyState
+                        icon="+"
+                        title={copy.empty}
+                        description={copy.subtitle}
+                        actionLabel={copy.newMaterial}
+                        onAction={openCreateModal}
+                    />
                 }
                 renderItem={({ item }) => (
                     <View style={[styles.card, !item.active && styles.cardInactive]}>
@@ -211,14 +261,12 @@ export default function PackagingMaterials() {
                                     <Text style={styles.costUnit}>/ {getUnitLabel(item.unit_type)}</Text>
                                 </View>
                             </View>
-                            <TouchableOpacity
-                                style={[styles.statusPill, item.active ? styles.statusActive : styles.statusInactive]}
-                                onPress={() => toggleActive(item.id, item.active)}
-                            >
-                                <View style={[styles.statusDotInner, item.active ? styles.dotGreen : styles.dotGray]} />
-                                <Text style={[styles.statusPillText, item.active ? styles.statusTextActive : styles.statusTextInactive]}>
-                                    {item.active ? copy.active : copy.inactive}
-                                </Text>
+                            <TouchableOpacity onPress={() => toggleActive(item.id, item.active)}>
+                                <StatusBadge
+                                    label={item.active ? copy.active : copy.inactive}
+                                    tone={item.active ? 'success' : 'muted'}
+                                    dot
+                                />
                             </TouchableOpacity>
                         </View>
                         
@@ -255,7 +303,7 @@ export default function PackagingMaterials() {
                                 placeholder={copy.namePlaceholder}
                                 value={name}
                                 onChangeText={setName}
-                                placeholderTextColor="#9ca3af"
+                                placeholderTextColor={colors.text.secondary}
                             />
 
                             <Text style={styles.label}>{copy.unitType}</Text>
@@ -280,90 +328,89 @@ export default function PackagingMaterials() {
                                 value={unitCost}
                                 onChangeText={setUnitCost}
                                 keyboardType="decimal-pad"
-                                placeholderTextColor="#9ca3af"
+                                placeholderTextColor={colors.text.secondary}
                             />
 
                             <View style={styles.modalActions}>
                                 <TouchableOpacity style={styles.modalCancel} onPress={() => setModalVisible(false)}>
                                     <Text style={styles.modalCancelText}>{copy.cancel}</Text>
                                 </TouchableOpacity>
-                                <TouchableOpacity style={styles.modalSave} onPress={handleSave}>
-                                    <Text style={styles.modalSaveText}>{copy.save}</Text>
+                                <TouchableOpacity style={[styles.modalSave, saving && styles.disabled]} onPress={handleSave} disabled={saving}>
+                                    <Text style={styles.modalSaveText}>{saving ? copy.saving : copy.save}</Text>
                                 </TouchableOpacity>
                             </View>
                         </ScrollView>
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
+            <ConfirmDialog
+                visible={deleteId !== null}
+                title={copy.deleteTitle}
+                message={copy.deleteWarning}
+                confirmLabel={copy.delete}
+                cancelLabel={copy.cancel}
+                destructive
+                onConfirm={confirmDelete}
+                onCancel={() => setDeleteId(null)}
+            />
         </View>
     );
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.bg, padding: 20 },
-    loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg },
-    title: { fontSize: 26, fontWeight: '800', color: colors.text, letterSpacing: -0.5 },
-    subtitle: { fontSize: 14, color: colors.subtext, marginBottom: 20, marginTop: 2 },
-    addButton: { backgroundColor: colors.primary, padding: 14, borderRadius: 10, alignItems: 'center', marginBottom: 16 },
-    addButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-    listContent: { paddingBottom: 40 },
-    emptyBlock: { alignItems: 'center', paddingVertical: 30, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border },
-    emptyText: { color: colors.subtext, fontSize: 14 },
+    container: { flex: 1, backgroundColor: colors.bg.page, padding: SPACING.lg },
+    loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg.page },
+    loadingContent: { width: '100%', paddingHorizontal: SPACING.lg },
+    title: { ...v.type.title, color: colors.text.primary },
+    subtitle: { ...v.type.body, color: colors.text.secondary, marginBottom: SPACING.xl, marginTop: 2 },
+    addButton: { ...v.primaryButton, marginBottom: SPACING.lg },
+    addButtonText: { color: colors.accent.fg, ...v.type.label },
+    syncStatus: { marginBottom: SPACING.md },
+    tools: { gap: SPACING.sm, marginBottom: SPACING.md },
+    filterRow: { gap: SPACING.sm, paddingRight: SPACING.xs },
+    listContent: { paddingBottom: SPACING.xxl + SPACING.sm },
     // ── Card ──
     card: {
-        backgroundColor: colors.surface,
-        padding: 16,
-        borderRadius: 14,
-        marginBottom: 10,
-        shadowColor: '#000',
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 3,
-        shadowOffset: { width: 0, height: 2 },
-        borderColor: colors.border,
-        borderWidth: 1,
+        ...v.card,
+        padding: SPACING.lg,
+        marginBottom: SPACING.sm,
     },
     cardInactive: {
         opacity: 0.6,
     },
     cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-    cardInfo: { flex: 1, marginRight: 12 },
-    cardName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 4 },
+    cardInfo: { flex: 1, marginRight: SPACING.md },
+    cardName: { ...v.type.heading, color: colors.text.primary, marginBottom: SPACING.xs },
     costRow: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
-    costValue: { fontSize: 18, fontWeight: '800', color: colors.primary, letterSpacing: -0.3 },
-    costUnit: { fontSize: 13, color: colors.subtext, fontWeight: '500' },
-    // ── Status pill ──
-    statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1 },
-    statusActive: { backgroundColor: themeMode === 'dark' ? '#183025' : '#f0fdf4', borderColor: themeMode === 'dark' ? '#2e6b4d' : '#86efac' },
-    statusInactive: { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
-    statusDotInner: { width: 6, height: 6, borderRadius: 3 },
-    dotGreen: { backgroundColor: colors.success },
-    dotGray: { backgroundColor: colors.subtext },
-    statusPillText: { fontSize: 12, fontWeight: '700' },
-    statusTextActive: { color: colors.success },
-    statusTextInactive: { color: colors.subtext },
+    // Standalone highlighted price on a neutral card — accent, not a status.
+    costValue: { ...v.type.heading, color: colors.accent.bg },
+    costUnit: { ...v.type.label, color: colors.text.secondary },
     // ── Actions ──
-    cardActions: { flexDirection: 'row', gap: 8, paddingTop: 12, marginTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
-    editBtn: { flex: 1, backgroundColor: colors.surfaceMuted, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-    editBtnText: { color: colors.text, fontSize: 14, fontWeight: '600' },
-    deleteBtn: { flex: 1, backgroundColor: themeMode === 'dark' ? '#352026' : '#fef2f2', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-    deleteBtnText: { color: colors.danger, fontSize: 14, fontWeight: '600' },
+    cardActions: { flexDirection: 'row', gap: SPACING.sm, paddingTop: SPACING.md, marginTop: SPACING.md, borderTopWidth: 1, borderTopColor: colors.border.default },
+    editBtn: { flex: 1, minHeight: 44, justifyContent: 'center', backgroundColor: colors.bg.raised, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: 'center' },
+    editBtnText: { color: colors.text.primary, ...v.type.body, fontWeight: '600' },
+    // A genuine danger-tinted action (delete).
+    deleteBtn: { flex: 1, minHeight: 44, justifyContent: 'center', ...v.dangerSurface, borderWidth: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, alignItems: 'center' },
+    deleteBtnText: { color: colors.status.danger.fg, ...v.type.body, fontWeight: '600' },
     // ── Modal ──
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    modalContainer: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 40 },
-    modalTitle: { fontSize: 20, fontWeight: '800', marginBottom: 20, color: colors.text },
-    label: { fontSize: 12, fontWeight: '700', color: colors.subtext, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 },
-    input: { backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 14, fontSize: 16, marginBottom: 16, color: colors.text },
-    unitTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
-    unitTypePill: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border },
-    unitTypePillActive: { backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff', borderColor: colors.primary },
-    unitTypePillText: { fontSize: 14, fontWeight: '600', color: colors.subtext },
-    unitTypePillTextActive: { color: colors.primary },
-    modalActions: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 10 },
-    modalCancel: { flex: 1, paddingVertical: 14, backgroundColor: colors.surfaceMuted, borderRadius: 10, alignItems: 'center' },
-    modalCancelText: { fontSize: 16, fontWeight: '600', color: colors.text },
-    modalSave: { flex: 1, paddingVertical: 14, backgroundColor: colors.primary, borderRadius: 10, alignItems: 'center' },
-    modalSaveText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+    modalOverlay: { flex: 1, backgroundColor: OVERLAY_SCRIM, justifyContent: 'flex-end' },
+    modalContainer: { backgroundColor: colors.bg.surface, borderTopLeftRadius: RADIUS.md, borderTopRightRadius: RADIUS.md, padding: SPACING.xl, paddingBottom: SPACING.xxl + SPACING.sm },
+    modalTitle: { ...v.type.title, marginBottom: SPACING.xl, color: colors.text.primary },
+    label: { ...v.type.label, color: colors.text.secondary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: SPACING.xs },
+    input: { ...v.input, marginBottom: SPACING.lg },
+    unitTypeRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg },
+    // Selection reads as the info tone, same as any other pick-one-of-N control.
+    unitTypePill: { minHeight: 44, justifyContent: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderRadius: RADIUS.pill, backgroundColor: colors.bg.raised, borderWidth: 1, borderColor: colors.border.default },
+    unitTypePillActive: { backgroundColor: colors.status.info.bg, borderColor: colors.status.info.fg },
+    unitTypePillText: { ...v.type.body, fontWeight: '600', color: colors.text.secondary },
+    unitTypePillTextActive: { color: colors.status.info.fg },
+    modalActions: { flexDirection: 'row', justifyContent: 'space-between', gap: SPACING.md, marginTop: SPACING.sm },
+    modalCancel: { flex: 1, ...v.secondaryButton },
+    modalCancelText: { ...v.type.heading, color: colors.text.primary },
+    modalSave: { flex: 1, ...v.primaryButton },
+    modalSaveText: { ...v.type.heading, color: colors.accent.fg },
+    disabled: { opacity: 0.55 },
 });
 }

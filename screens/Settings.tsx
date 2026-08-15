@@ -7,6 +7,9 @@ import {
     View,
 } from 'react-native';
 import { AppLanguage, AppThemeMode, useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { PushNotificationSettings } from '../src/components/ui';
+import { RADIUS, SPACING } from '../src/core/theme/tokens';
 
 export default function Settings() {
     const {
@@ -20,7 +23,7 @@ export default function Settings() {
         todoNotificationsEnabled,
     } = useAppSettings();
 
-    const styles = makeStyles(colors);
+    const styles = makeStyles(colors, themeMode);
 
     function renderSegment<T extends string>(value: T, current: T, label: string, onPress: (value: T) => void) {
         const selected = value === current;
@@ -74,72 +77,82 @@ export default function Settings() {
                         <View style={[styles.toggleKnob, todoNotificationsEnabled && styles.toggleKnobActive]} />
                     </View>
                 </TouchableOpacity>
+                <PushNotificationSettings
+                    title={t('pushNotifications')}
+                    description={t('pushNotificationsNote')}
+                    enabledLabel={t('enabled')}
+                    notConfiguredLabel={t('pushNotConfigured')}
+                    openSettingsLabel={t('openIosSettings')}
+                    eventsLabel={t('notificationEvents')}
+                    requestPermissionLabel={t('requestPermission')}
+                    checkingLabel={t('checking')}
+                    tokenSavedLabel={t('tokenSaved')}
+                    permissionDeniedLabel={t('permissionDenied')}
+                    tokenUnavailableLabel={t('tokenUnavailable')}
+                />
             </View>
         </ScrollView>
     );
 }
 
-function makeStyles(colors: ReturnType<typeof useAppSettings>['colors']) {
+function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+    const v = createVisualSystem(colors, themeMode);
     return StyleSheet.create({
-        container: { flex: 1, backgroundColor: colors.bg },
-        content: { padding: 20, paddingBottom: 44 },
-        title: { fontSize: 28, fontWeight: '800', color: colors.text, letterSpacing: -0.4 },
-        subtitle: { fontSize: 14, color: colors.subtext, marginTop: 4, marginBottom: 20 },
+        container: { flex: 1, backgroundColor: colors.bg.page },
+        content: { padding: SPACING.lg, paddingBottom: SPACING.xxl + SPACING.md },
+        title: { ...v.type.title, color: colors.text.primary },
+        subtitle: { ...v.type.body, color: colors.text.secondary, marginTop: SPACING.xs, marginBottom: SPACING.xl },
         card: {
-            backgroundColor: colors.surface,
-            borderRadius: 16,
-            borderWidth: 1,
-            borderColor: colors.border,
-            padding: 16,
-            marginBottom: 14,
+            ...v.card,
+            marginBottom: SPACING.md,
         },
         sectionTitle: {
-            fontSize: 12,
-            fontWeight: '800',
-            color: colors.subtext,
-            letterSpacing: 0.8,
+            ...v.type.label,
+            color: colors.text.secondary,
             textTransform: 'uppercase',
-            marginBottom: 14,
+            marginBottom: SPACING.md,
         },
-        settingBlock: { marginBottom: 18 },
-        settingLabel: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 8 },
+        settingBlock: { marginBottom: SPACING.lg },
+        settingLabel: { ...v.type.body, fontWeight: '700', color: colors.text.primary, marginBottom: SPACING.sm },
         segmentGroup: {
             flexDirection: 'row',
-            backgroundColor: colors.surfaceMuted,
-            borderRadius: 12,
-            padding: 4,
+            backgroundColor: colors.bg.raised,
+            borderRadius: RADIUS.md,
+            padding: SPACING.xs,
             borderWidth: 1,
-            borderColor: colors.border,
+            borderColor: colors.border.default,
         },
         segment: {
             flex: 1,
-            minHeight: 40,
-            borderRadius: 9,
+            minHeight: 44,
+            borderRadius: RADIUS.sm,
             alignItems: 'center',
             justifyContent: 'center',
         },
-        segmentActive: { backgroundColor: colors.primary },
-        segmentText: { fontSize: 14, fontWeight: '700', color: colors.subtext },
-        segmentTextActive: { color: '#fff' },
-        toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+        segmentActive: { backgroundColor: colors.accent.bg },
+        segmentText: { ...v.type.body, fontWeight: '700', color: colors.text.secondary },
+        segmentTextActive: { color: colors.accent.fg },
+        toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: SPACING.lg },
         toggleTextWrap: { flex: 1 },
-        helpText: { fontSize: 13, color: colors.subtext, lineHeight: 18 },
+        helpText: { ...v.type.label, color: colors.text.secondary },
         toggleTrack: {
             width: 52,
             height: 30,
-            borderRadius: 15,
-            backgroundColor: colors.surfaceMuted,
+            borderRadius: RADIUS.pill,
+            backgroundColor: colors.bg.raised,
             borderWidth: 1,
-            borderColor: colors.border,
+            borderColor: colors.border.default,
             padding: 3,
         },
-        toggleTrackActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+        toggleTrackActive: { backgroundColor: colors.accent.bg, borderColor: colors.accent.bg },
         toggleKnob: {
             width: 22,
             height: 22,
-            borderRadius: 11,
-            backgroundColor: colors.surface,
+            borderRadius: RADIUS.pill,
+            backgroundColor: colors.bg.surface,
         },
-        toggleKnobActive: { transform: [{ translateX: 21 }], backgroundColor: '#fff' },
+        // Track inverts brightness by theme (like accent.bg everywhere else),
+        // so the knob needs accent.fg to stay visible, not a fixed white.
+        toggleKnobActive: { transform: [{ translateX: 21 }], backgroundColor: colors.accent.fg },
     });
 }

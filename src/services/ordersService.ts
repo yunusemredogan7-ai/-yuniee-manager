@@ -98,7 +98,7 @@ export const ordersService = {
                     product_id,
                     size,
                     quantity,
-                    products ( name )
+                    products ( name, product_type )
                 `)
                 .eq('order_id', orderId);
 

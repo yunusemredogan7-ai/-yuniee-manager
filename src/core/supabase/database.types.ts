@@ -403,6 +403,7 @@ export type Database = {
           label: string | null
           sort_order: number
           status: string | null
+          task_scope: string
           title: string
           updated_at: string | null
           waiting_reason: string | null
@@ -416,6 +417,7 @@ export type Database = {
           label?: string | null
           sort_order?: number
           status?: string | null
+          task_scope?: string
           title: string
           updated_at?: string | null
           waiting_reason?: string | null
@@ -429,6 +431,7 @@ export type Database = {
           label?: string | null
           sort_order?: number
           status?: string | null
+          task_scope?: string
           title?: string
           updated_at?: string | null
           waiting_reason?: string | null
@@ -440,6 +443,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      current_todo_scopes: { Args: never; Returns: string[] }
       deliver_order_safely: { Args: { p_order_id: number }; Returns: boolean }
     }
     Enums: {

@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { ColorTokens, darkColors, lightColors } from '../theme/tokens';
 
 export type AppThemeMode = 'light' | 'dark';
 export type AppLanguage = 'en' | 'tr';
@@ -15,52 +16,17 @@ type AppSettingsContextValue = {
     colors: AppColors;
 };
 
-type AppColors = {
-    bg: string;
-    surface: string;
-    surfaceMuted: string;
-    text: string;
-    subtext: string;
-    border: string;
-    primary: string;
-    success: string;
-    warning: string;
-    danger: string;
-};
+/** Re-exported so existing `import { AppColors } from '.../AppSettingsContext'`
+ * call sites keep working — the actual token values live in `src/core/theme/tokens.ts`. */
+export type AppColors = ColorTokens;
 
 const STORAGE_KEY = 'yuniee.appSettings.v1';
 
-const lightColors: AppColors = {
-    bg: '#f7f8fb',
-    surface: '#ffffff',
-    surfaceMuted: '#f8fafc',
-    text: '#111827',
-    subtext: '#6b7280',
-    border: '#e5e7eb',
-    primary: '#5867d8',
-    success: '#4f9d78',
-    warning: '#d89216',
-    danger: '#c94f4f',
-};
-
-const darkColors: AppColors = {
-    bg: '#101217',
-    surface: '#181b22',
-    surfaceMuted: '#20242d',
-    text: '#f4f6fb',
-    subtext: '#a7afbd',
-    border: '#2b313c',
-    primary: '#8f9aff',
-    success: '#75c89d',
-    warning: '#e2a84a',
-    danger: '#e27d7d',
-};
-
 const translations = {
     en: {
-        dashboard: 'Dashboard',
+        dashboard: 'Today',
         orders: 'Orders',
-        todo: 'To Do',
+        todo: 'To do',
         stock: 'Stock',
         finance: 'Finance',
         settings: 'Settings',
@@ -73,11 +39,22 @@ const translations = {
         notifications: 'Notifications',
         todoReminders: 'To Do reminders',
         todoRemindersNote: 'Local reminder delivery requires native notification setup.',
+        pushNotifications: 'iOS push notifications',
+        pushNotificationsNote: 'Get notified for new orders, packing tasks, low stock, and waiting tasks.',
+        pushNotConfigured: 'Push not configured',
+        enabled: 'Enabled',
+        openIosSettings: 'Open iOS Settings',
+        notificationEvents: 'Notification events',
+        requestPermission: 'Enable notifications',
+        checking: 'Checking...',
+        tokenSaved: 'Token saved',
+        permissionDenied: 'Permission denied',
+        tokenUnavailable: 'Token unavailable',
         appPreferences: 'App preferences',
         ownerMode: 'Owner/admin workspace',
     },
     tr: {
-        dashboard: 'Panel',
+        dashboard: 'Bugün',
         orders: 'Siparişler',
         todo: 'Yapılacaklar',
         stock: 'Stok',
@@ -92,6 +69,17 @@ const translations = {
         notifications: 'Bildirimler',
         todoReminders: 'Yapılacak hatırlatmaları',
         todoRemindersNote: 'Yerel hatırlatmalar için bildirim kurulumu gerekir.',
+        pushNotifications: 'iOS anlık bildirimleri',
+        pushNotificationsNote: 'Yeni sipariş, paketleme görevi, düşük stok ve bekleyen görevler için bildirim alın.',
+        pushNotConfigured: 'Push kurulmadı',
+        enabled: 'Açık',
+        openIosSettings: 'iOS Ayarlarını Aç',
+        notificationEvents: 'Bildirim olayları',
+        requestPermission: 'Bildirimleri aç',
+        checking: 'Kontrol ediliyor...',
+        tokenSaved: 'Token kaydedildi',
+        permissionDenied: 'İzin reddedildi',
+        tokenUnavailable: 'Token alınamadı',
         appPreferences: 'Uygulama tercihleri',
         ownerMode: 'Sahip/admin çalışma alanı',
     },

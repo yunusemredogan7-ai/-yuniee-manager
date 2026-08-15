@@ -10,12 +10,16 @@ import {
     Alert,
     Modal,
     ScrollView,
+    RefreshControl,
 } from 'react-native';
 import { supabase } from '../src/core/supabase/client';
 import { productsService, PRODUCT_TYPES, PRODUCT_COLORS, ProductType } from '../src/services/productsService';
 import { productionService, ProductStock } from '../src/services/productionService';
 import { stockService } from '../src/services/stockService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { EmptyState, FilterChip, LoadingSkeleton, StatusBadge, SyncStatus, WarningCard } from '../src/components/ui';
+import { OVERLAY_SCRIM, RADIUS, SPACING, hitSlopFor } from '../src/core/theme/tokens';
 
 const SIZES = ['XS', 'S', 'M', 'L', 'XL'] as const;
 const BAG_STOCK_KEY = 'bag-stock';
@@ -79,6 +83,11 @@ export default function ProductManagement() {
             Ecru: 'Ekru',
             Default: 'Varsayılan',
         },
+        all: 'Tümü',
+        incompleteCosts: 'Eksik maliyet bilgisi',
+        costWarning: 'Maliyeti 0 olan ürünleri gerçek kullanım öncesi kontrol edin.',
+        synced: 'Senkron',
+        refreshing: 'Yenileniyor...',
     } : {
         warning: 'Warning',
         error: 'Error',
@@ -127,10 +136,18 @@ export default function ProductManagement() {
             Ecru: 'Ecru',
             Default: 'Default',
         },
+        all: 'All',
+        incompleteCosts: 'Missing product cost',
+        costWarning: 'Review products with 0 cost before relying on profit.',
+        synced: 'Synced',
+        refreshing: 'Refreshing...',
     };
     const [products, setProducts] = useState<ProductWithStock[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
     const [search, setSearch] = useState('');
+    const [typeFilter, setTypeFilter] = useState<ProductType | 'all'>('all');
 
     // Add Product form
     const [showAddForm, setShowAddForm] = useState(false);
@@ -155,9 +172,9 @@ export default function ProductManagement() {
     const [actionInputs, setActionInputs] = useState<Record<string, string>>({});
     const [actionSaving, setActionSaving] = useState(false);
 
-    const fetchProducts = useCallback(async () => {
+    const fetchProducts = useCallback(async (showLoader = true) => {
         try {
-            setLoading(true);
+            if (showLoader) setLoading(true);
             const { data: productStockData, error: stockErr } = await productionService.getProductsWithStock();
             const { data: productsData, error: productsErr } = await productsService.getProducts();
 
@@ -174,10 +191,12 @@ export default function ProductManagement() {
                 };
             });
             setProducts(merged);
+            setLastUpdated(new Date());
         } catch (err) {
             console.log('fetchProducts catch:', err);
         } finally {
             setLoading(false);
+            setRefreshing(false);
         }
     }, []);
 
@@ -191,11 +210,21 @@ export default function ProductManagement() {
         return () => { supabase.removeChannel(channel); };
     }, [fetchProducts]);
 
+    const onRefresh = useCallback(() => {
+        setRefreshing(true);
+        fetchProducts(false);
+    }, [fetchProducts]);
+
     const filteredProducts = useMemo(() => {
         const q = search.trim().toLowerCase();
-        if (!q) return products;
-        return products.filter(p => p.name.toLowerCase().includes(q));
-    }, [products, search]);
+        return products.filter(p => {
+            const matchesSearch = !q || [p.name, p.product_type, p.color].join(' ').toLowerCase().includes(q);
+            const matchesType = typeFilter === 'all' || p.product_type === typeFilter;
+            return matchesSearch && matchesType;
+        });
+    }, [products, search, typeFilter]);
+
+    const missingCostCount = useMemo(() => products.filter(product => Number(product.cost) <= 0).length, [products]);
 
     function getStockQty(product: ProductWithStock, size: string): number {
         return product.stock?.find(s => s.size === size)?.quantity || 0;
@@ -351,9 +380,7 @@ export default function ProductManagement() {
                         <Text style={styles.productName}>{item.name}</Text>
                         <View style={styles.metaRow}>
                             {item.product_type && (
-                                <View style={styles.typeBadge}>
-                                    <Text style={styles.typeBadgeText}>{item.product_type}</Text>
-                                </View>
+                                <StatusBadge label={item.product_type} tone="primary" />
                             )}
                             {item.color && (
                                 <Text style={styles.colorText}>{getColorLabel(item.color)}</Text>
@@ -362,7 +389,7 @@ export default function ProductManagement() {
                             <Text style={styles.costText}>{copy.cost} {item.cost}₺</Text>
                         </View>
                     </View>
-                    <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(item)}>
+                    <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(item)} hitSlop={hitSlopFor(24)}>
                         <Text style={styles.editBtnText}>{copy.edit}</Text>
                     </TouchableOpacity>
                 </View>
@@ -409,18 +436,42 @@ export default function ProductManagement() {
                     value={search}
                     onChangeText={setSearch}
                     style={styles.searchInput}
-                    placeholderTextColor="#9ca3af"
+                    placeholderTextColor={colors.text.secondary}
                 />
                 <TouchableOpacity style={styles.addButton} onPress={() => setShowAddForm(!showAddForm)}>
                     <Text style={styles.addButtonText}>{showAddForm ? '✕' : '+'}</Text>
                 </TouchableOpacity>
             </View>
+            <View style={styles.syncRow}>
+                <SyncStatus timestamp={lastUpdated} syncing={refreshing || loading} label={copy.synced} syncingLabel={copy.refreshing} />
+            </View>
+            {missingCostCount > 0 ? (
+                <WarningCard
+                    title={`${missingCostCount} ${copy.incompleteCosts}`}
+                    description={copy.costWarning}
+                    tone="warning"
+                    style={styles.warningCard}
+                />
+            ) : null}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                <FilterChip label={copy.all} selected={typeFilter === 'all'} onPress={() => setTypeFilter('all')} count={products.length} />
+                {PRODUCT_TYPES.map(type => (
+                    <FilterChip
+                        key={type}
+                        label={type}
+                        selected={typeFilter === type}
+                        onPress={() => setTypeFilter(typeFilter === type ? 'all' : type)}
+                        count={products.filter(product => product.product_type === type).length}
+                        tone="primary"
+                    />
+                ))}
+            </ScrollView>
 
             {showAddForm && (
                 <View style={styles.addForm}>
                     <Text style={styles.addFormTitle}>{copy.newProduct}</Text>
 
-                    <TextInput placeholder={copy.productName} value={newName} onChangeText={setNewName} style={styles.input} placeholderTextColor="#9ca3af" />
+                    <TextInput placeholder={copy.productName} value={newName} onChangeText={setNewName} style={styles.input} placeholderTextColor={colors.text.secondary} />
 
                     <Text style={styles.fieldLabel}>{copy.productType}</Text>
                     <View style={styles.pillRow}>
@@ -441,24 +492,33 @@ export default function ProductManagement() {
                     </View>
 
                     <View style={styles.row}>
-                        <TextInput placeholder={copy.price} value={newPrice} onChangeText={setNewPrice} keyboardType="numeric" style={[styles.input, styles.halfInput]} placeholderTextColor="#9ca3af" />
-                        <TextInput placeholder={copy.cost} value={newCost} onChangeText={setNewCost} keyboardType="numeric" style={[styles.input, styles.halfInput]} placeholderTextColor="#9ca3af" />
+                        <TextInput placeholder={copy.price} value={newPrice} onChangeText={setNewPrice} keyboardType="numeric" style={[styles.input, styles.halfInput]} placeholderTextColor={colors.text.secondary} />
+                        <TextInput placeholder={copy.cost} value={newCost} onChangeText={setNewCost} keyboardType="numeric" style={[styles.input, styles.halfInput]} placeholderTextColor={colors.text.secondary} />
                     </View>
                     <TouchableOpacity style={[styles.submitBtn, inserting && styles.disabledBtn]} onPress={handleAddProduct} disabled={inserting}>
-                        {inserting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>{copy.addProduct}</Text>}
+                        {inserting ? <ActivityIndicator color={colors.accent.fg} /> : <Text style={styles.submitBtnText}>{copy.addProduct}</Text>}
                     </TouchableOpacity>
                 </View>
             )}
 
             {loading ? (
-                <ActivityIndicator style={styles.loader} size="large" color="#4f46e5" />
+                <LoadingSkeleton rows={4} style={styles.loadingContent} />
             ) : (
                 <FlatList
                     data={filteredProducts}
                     keyExtractor={item => String(item.id)}
                     renderItem={renderProduct}
                     contentContainerStyle={styles.listContent}
-                    ListEmptyComponent={<Text style={styles.emptyText}>{search ? copy.noMatching : copy.noProducts}</Text>}
+                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                    ListEmptyComponent={
+                        <EmptyState
+                            icon="+"
+                            title={search ? copy.noMatching : copy.noProducts}
+                            description={search ? copy.search : copy.newProduct}
+                            actionLabel={search ? undefined : copy.addProduct}
+                            onAction={search ? undefined : () => setShowAddForm(true)}
+                        />
+                    }
                 />
             )}
 
@@ -494,7 +554,7 @@ export default function ProductManagement() {
                             <TextInput value={editCost} onChangeText={setEditCost} keyboardType="numeric" style={styles.input} />
 
                             <TouchableOpacity style={[styles.submitBtn, saving && styles.disabledBtn]} onPress={handleSaveEdit} disabled={saving}>
-                                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>{copy.saveChanges}</Text>}
+                                {saving ? <ActivityIndicator color={colors.accent.fg} /> : <Text style={styles.submitBtnText}>{copy.saveChanges}</Text>}
                             </TouchableOpacity>
                             <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditProduct(null)}>
                                 <Text style={styles.cancelBtnText}>{copy.cancel}</Text>
@@ -531,7 +591,7 @@ export default function ProductManagement() {
                                         keyboardType="numeric"
                                         placeholder="0"
                                         style={styles.sizeInput}
-                                        placeholderTextColor="#9ca3af"
+                                        placeholderTextColor={colors.text.secondary}
                                     />
                                 </View>
                             ) : (
@@ -547,7 +607,7 @@ export default function ProductManagement() {
                                             keyboardType="numeric"
                                             placeholder="0"
                                             style={styles.sizeInput}
-                                            placeholderTextColor="#9ca3af"
+                                            placeholderTextColor={colors.text.secondary}
                                         />
                                     </View>
                                 ))
@@ -555,7 +615,7 @@ export default function ProductManagement() {
                         </View>
 
                         <TouchableOpacity style={[styles.submitBtn, actionSaving && styles.disabledBtn]} onPress={handleSaveAction} disabled={actionSaving}>
-                            {actionSaving ? <ActivityIndicator color="#fff" /> : (
+                            {actionSaving ? <ActivityIndicator color={colors.accent.fg} /> : (
                                 <Text style={styles.submitBtnText}>
                                     {actionType === 'production' ? copy.saveProduction : copy.saveAdjustment}
                                 </Text>
@@ -572,65 +632,71 @@ export default function ProductManagement() {
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.bg },
-    topRow: { flexDirection: 'row', padding: 16, paddingBottom: 8, gap: 10 },
-    searchInput: { flex: 1, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, borderRadius: 10, padding: 12, fontSize: 14, color: colors.text },
-    addButton: { width: 46, height: 46, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-    addButtonText: { color: '#fff', fontSize: 22, fontWeight: '600' },
-    addForm: { marginHorizontal: 16, marginBottom: 12, backgroundColor: colors.surface, borderRadius: 14, padding: 16, borderWidth: 1, borderColor: colors.border },
-    addFormTitle: { fontSize: 16, fontWeight: '700', marginBottom: 12, color: colors.text },
-    fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.subtext, letterSpacing: 0.6, marginBottom: 6, marginTop: 8 },
-    pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
-    pill: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border },
-    pillActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-    pillText: { fontSize: 13, fontWeight: '600', color: colors.subtext },
-    pillTextActive: { color: '#fff' },
-    input: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, borderRadius: 10, padding: 12, fontSize: 15, marginBottom: 10, color: colors.text },
-    row: { flexDirection: 'row', gap: 10 },
+    container: { flex: 1, backgroundColor: colors.bg.page },
+    topRow: { flexDirection: 'row', padding: SPACING.lg, paddingBottom: SPACING.sm, gap: SPACING.md },
+    syncRow: { paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm },
+    warningCard: { marginHorizontal: SPACING.lg, marginBottom: SPACING.sm },
+    filterRow: { gap: SPACING.sm, paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm },
+    searchInput: { flex: 1, ...v.input, backgroundColor: colors.bg.surface },
+    addButton: { width: 46, height: 46, borderRadius: RADIUS.sm, backgroundColor: colors.accent.bg, alignItems: 'center', justifyContent: 'center' },
+    addButtonText: { color: colors.accent.fg, ...v.type.title },
+    addForm: { marginHorizontal: SPACING.lg, marginBottom: SPACING.md, ...v.card },
+    addFormTitle: { ...v.type.heading, marginBottom: SPACING.md, color: colors.text.primary },
+    fieldLabel: { ...v.type.label, color: colors.text.secondary, letterSpacing: 0.6, marginBottom: SPACING.xs, marginTop: SPACING.sm },
+    pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.xs, marginBottom: SPACING.sm },
+    // Wrapping row with a small gap: hitSlop would overlap, so the tap target is met by minHeight instead.
+    pill: { minHeight: 44, justifyContent: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderRadius: RADIUS.pill, backgroundColor: colors.bg.raised, borderWidth: 1, borderColor: colors.border.default },
+    pillActive: { backgroundColor: colors.accent.bg, borderColor: colors.accent.bg },
+    pillText: { ...v.type.label, color: colors.text.secondary },
+    pillTextActive: { color: colors.accent.fg },
+    input: { ...v.input, marginBottom: SPACING.sm },
+    row: { flexDirection: 'row', gap: SPACING.sm },
     halfInput: { flex: 1 },
-    submitBtn: { backgroundColor: colors.primary, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 4 },
+    submitBtn: { ...v.primaryButton, marginTop: SPACING.xs },
     disabledBtn: { opacity: 0.6 },
-    submitBtnText: { color: '#fff', fontWeight: '700', fontSize: 14, letterSpacing: 0.5 },
-    card: { backgroundColor: colors.surface, borderRadius: 14, padding: 14, marginBottom: 10, marginHorizontal: 16, borderWidth: 1, borderColor: colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 3 },
-    cardHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
+    submitBtnText: { color: colors.accent.fg, ...v.type.label },
+    card: { ...v.card, padding: SPACING.md, marginBottom: SPACING.sm, marginHorizontal: SPACING.lg },
+    cardHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: SPACING.sm },
     cardHeaderLeft: { flex: 1 },
-    productName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 4 },
-    metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-    typeBadge: { backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-    typeBadgeText: { fontSize: 12, fontWeight: '700', color: colors.primary },
-    colorText: { fontSize: 12, color: colors.subtext, fontWeight: '500' },
-    priceText: { fontSize: 12, fontWeight: '700', color: colors.text },
-    costText: { fontSize: 12, color: colors.subtext },
-    editBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff' },
-    editBtnText: { fontSize: 13, fontWeight: '600', color: colors.primary },
-    stockRow: { flexDirection: 'row', gap: 4, marginBottom: 10 },
-    stockCell: { flex: 1, alignItems: 'center', backgroundColor: colors.surfaceMuted, borderRadius: 6, paddingVertical: 8 },
-    stockCellTotal: { backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff' },
-    bagStockCell: { alignItems: 'flex-start', paddingHorizontal: 14, borderRadius: 10, backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff' },
-    stockLabel: { fontSize: 12, fontWeight: '600', color: colors.subtext, marginBottom: 2 },
-    stockValue: { fontSize: 16, fontWeight: '700', color: colors.text },
-    stockValueTotal: { color: colors.primary },
-    actionRow: { flexDirection: 'row', gap: 8 },
-    productionBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: themeMode === 'dark' ? '#183025' : '#f0fdf4', borderWidth: 1, borderColor: themeMode === 'dark' ? '#2e6b4d' : '#bbf7d0', alignItems: 'center' },
-    productionBtnText: { fontSize: 13, fontWeight: '600', color: colors.success },
-    adjustBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: themeMode === 'dark' ? '#322818' : '#fef3c7', borderWidth: 1, borderColor: themeMode === 'dark' ? '#6f4e26' : '#fde68a', alignItems: 'center' },
-    adjustBtnText: { fontSize: 13, fontWeight: '600', color: colors.warning },
-    listContent: { paddingTop: 4, paddingBottom: 40 },
-    emptyText: { textAlign: 'center', color: colors.subtext, marginTop: 40, fontSize: 14 },
-    loader: { marginTop: 40 },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    modalContainer: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 40, maxHeight: '90%' },
-    modalTitle: { fontSize: 20, fontWeight: '800', marginBottom: 4, color: colors.text },
-    modalSubtitle: { fontSize: 14, color: colors.subtext, marginBottom: 16 },
-    modalHint: { fontSize: 12, color: colors.subtext, marginBottom: 16 },
-    sizeInputRow: { flexDirection: 'row', gap: 6, marginBottom: 16 },
+    productName: { ...v.type.heading, color: colors.text.primary, marginBottom: SPACING.xs },
+    metaRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs, flexWrap: 'wrap' },
+    colorText: { ...v.type.caption, color: colors.text.secondary },
+    priceText: { ...v.type.caption, fontWeight: '700', color: colors.text.primary },
+    costText: { ...v.type.caption, color: colors.text.secondary },
+    // A real actionable highlight (edit), not decoration — reads as the info tone.
+    editBtn: { paddingHorizontal: SPACING.md, paddingVertical: SPACING.xs, borderRadius: RADIUS.pill, backgroundColor: colors.status.info.bg },
+    editBtnText: { ...v.type.label, color: colors.status.info.fg },
+    stockRow: { flexDirection: 'row', gap: SPACING.xs, marginBottom: SPACING.sm },
+    stockCell: { flex: 1, alignItems: 'center', backgroundColor: colors.bg.raised, borderRadius: RADIUS.sm, paddingVertical: SPACING.sm },
+    // The "total" cell is a genuine highlighted total, same info tone as
+    // Orders' totals card — its text below must use status.info.fg.
+    stockCellTotal: { backgroundColor: colors.status.info.bg },
+    bagStockCell: { alignItems: 'flex-start', paddingHorizontal: SPACING.md, borderRadius: RADIUS.sm, backgroundColor: colors.status.info.bg },
+    stockLabel: { ...v.type.caption, color: colors.text.secondary, marginBottom: 2 },
+    stockValue: { ...v.type.heading, color: colors.text.primary },
+    stockValueTotal: { color: colors.status.info.fg },
+    actionRow: { flexDirection: 'row', gap: SPACING.sm },
+    // Genuine status surfaces: recording production is a success action, adjusting is a caution action.
+    productionBtn: { flex: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, ...v.successSurface, borderWidth: 1, alignItems: 'center' },
+    productionBtnText: { ...v.type.label, color: colors.status.success.fg },
+    adjustBtn: { flex: 1, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, ...v.warningSurface, borderWidth: 1, alignItems: 'center' },
+    adjustBtnText: { ...v.type.label, color: colors.status.warning.fg },
+    listContent: { paddingTop: SPACING.xs, paddingBottom: SPACING.xxl + SPACING.sm },
+    loadingContent: { paddingHorizontal: SPACING.lg, paddingTop: SPACING.sm },
+    modalOverlay: { flex: 1, backgroundColor: OVERLAY_SCRIM, justifyContent: 'flex-end' },
+    modalContainer: { backgroundColor: colors.bg.surface, borderTopLeftRadius: RADIUS.md, borderTopRightRadius: RADIUS.md, padding: SPACING.xl, paddingBottom: SPACING.xxl + SPACING.sm, maxHeight: '90%' },
+    modalTitle: { ...v.type.title, marginBottom: SPACING.xs, color: colors.text.primary },
+    modalSubtitle: { ...v.type.body, color: colors.text.secondary, marginBottom: SPACING.lg },
+    modalHint: { ...v.type.caption, color: colors.text.secondary, marginBottom: SPACING.lg },
+    sizeInputRow: { flexDirection: 'row', gap: SPACING.xs, marginBottom: SPACING.lg },
     sizeInputGroup: { flex: 1, alignItems: 'center' },
     bagInputGroup: { alignItems: 'stretch' },
-    sizeInputLabel: { fontSize: 12, fontWeight: '600', color: colors.subtext, marginBottom: 2 },
-    sizeInputCurrent: { fontSize: 12, color: colors.subtext, marginBottom: 4 },
-    sizeInput: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, borderRadius: 8, padding: 8, fontSize: 14, textAlign: 'center', width: '100%', color: colors.text },
-    cancelBtn: { marginTop: 12, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.surfaceMuted, borderRadius: 10 },
-    cancelBtnText: { fontSize: 16, fontWeight: '600', color: colors.text },
+    sizeInputLabel: { ...v.type.caption, color: colors.text.secondary, marginBottom: 2 },
+    sizeInputCurrent: { ...v.type.caption, color: colors.text.secondary, marginBottom: SPACING.xs },
+    sizeInput: { borderWidth: 1, borderColor: colors.border.default, backgroundColor: colors.bg.raised, borderRadius: RADIUS.sm, padding: SPACING.sm, ...v.type.body, textAlign: 'center', width: '100%', color: colors.text.primary },
+    cancelBtn: { ...v.secondaryButton, marginTop: SPACING.md },
+    cancelBtnText: { ...v.type.heading, color: colors.text.primary },
 });
 }

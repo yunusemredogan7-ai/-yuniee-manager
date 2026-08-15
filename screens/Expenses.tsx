@@ -9,6 +9,7 @@ import {
     ActivityIndicator,
     Alert,
     RefreshControl,
+    ScrollView,
 } from 'react-native';
 import { supabase } from '../src/core/supabase/client';
 import {
@@ -18,6 +19,9 @@ import {
     ExpenseCategory,
 } from '../src/services/expensesService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { ConfirmDialog, EmptyState, FilterChip, LoadingSkeleton, SearchInput, SyncStatus } from '../src/components/ui';
+import { RADIUS, SPACING, hitSlopFor } from '../src/core/theme/tokens';
 
 export default function Expenses() {
     const { colors, language, themeMode } = useAppSettings();
@@ -43,6 +47,10 @@ export default function Expenses() {
         addExpense: 'GİDERİ KAYDET',
         noExpenses: 'Henüz işletme gideri yok',
         empty: 'İlk işletme giderini eklemek için + düğmesine dokun.',
+        search: 'Gider ara',
+        all: 'Tümü',
+        synced: 'Senkron',
+        refreshing: 'Yenileniyor...',
     } : {
         warning: 'Warning',
         error: 'Error',
@@ -64,9 +72,13 @@ export default function Expenses() {
         addExpense: 'SAVE COST',
         noExpenses: 'No operating costs yet',
         empty: 'Tap + to add your first business overhead cost.',
+        search: 'Search costs',
+        all: 'All',
+        synced: 'Synced',
+        refreshing: 'Refreshing...',
     };
-    const categoryLabels: Record<ExpenseCategory, string> = language === 'tr'
-        ? {
+    const categoryLabels: Record<ExpenseCategory, string> = React.useMemo(() => language === 'tr'
+        ? ({
             Rent: 'Kira',
             Electricity: 'Elektrik',
             Water: 'Su',
@@ -78,8 +90,8 @@ export default function Expenses() {
             Ads: 'Reklam',
             General: 'Genel',
             Other: 'Diğer',
-        }
-        : {
+        })
+        : ({
             Rent: 'Rent',
             Electricity: 'Electricity',
             Water: 'Water',
@@ -91,15 +103,19 @@ export default function Expenses() {
             Ads: 'Ads',
             General: 'General',
             Other: 'Other',
-        };
-    const getCategoryLabel = (cat: string) => {
+        }), [language]);
+    const getCategoryLabel = useCallback((cat: string) => {
         if (cat === 'Advertising') return language === 'tr' ? 'Reklam' : 'Ads';
         return categoryLabels[cat as ExpenseCategory] || cat;
-    };
+    }, [categoryLabels, language]);
     const [expenses, setExpenses] = useState<Expense[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [totalExpenses, setTotalExpenses] = useState(0);
+    const [expenseSearch, setExpenseSearch] = useState('');
+    const [categoryFilter, setCategoryFilter] = useState<ExpenseCategory | 'all'>('all');
+    const [deleteId, setDeleteId] = useState<number | null>(null);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
     // Form
     const [showForm, setShowForm] = useState(false);
@@ -119,6 +135,7 @@ export default function Expenses() {
 
             const total = await expensesService.getTotalExpenses();
             setTotalExpenses(total);
+            setLastUpdated(new Date());
         } catch (err) {
             console.log('fetchExpenses catch:', err);
         } finally {
@@ -177,38 +194,19 @@ export default function Expenses() {
         }
     }
 
-    async function handleDeleteExpense(id: number) {
-        Alert.alert(copy.deleteTitle, copy.areYouSure, [
-            { text: copy.cancel, style: 'cancel' },
-            {
-                text: copy.delete,
-                style: 'destructive',
-                onPress: async () => {
-                    const { error } = await expensesService.deleteExpense(id);
-                    if (error) {
-                        Alert.alert(copy.error, copy.deleteFailed);
-                    } else {
-                        fetchExpenses();
-                    }
-                },
-            },
-        ]);
+    function handleDeleteExpense(id: number) {
+        setDeleteId(id);
     }
 
-    function getCategoryColor(cat: string): string {
-        switch (cat) {
-            case 'Shipping': return '#3b82f6';
-            case 'Fabric': return '#8b6fd6';
-            case 'Printing': return '#d89216';
-            case 'Packaging': return '#4f9d78';
-            case 'Rent': return '#64748b';
-            case 'Electricity': return '#eab308';
-            case 'Water': return '#0ea5e9';
-            case 'Internet': return '#6366f1';
-            case 'Ads':
-            case 'Advertising': return '#ec4899';
-            case 'General': return '#6b7280';
-            default: return '#94a3b8';
+    async function confirmDeleteExpense() {
+        if (!deleteId) return;
+        const id = deleteId;
+        setDeleteId(null);
+        const { error } = await expensesService.deleteExpense(id);
+        if (error) {
+            Alert.alert(copy.error, copy.deleteFailed);
+        } else {
+            fetchExpenses();
         }
     }
 
@@ -217,13 +215,13 @@ export default function Expenses() {
             day: '2-digit', month: '2-digit', year: 'numeric',
             hour: '2-digit', minute: '2-digit',
         });
-        const catColor = getCategoryColor(item.category);
 
         return (
             <View style={styles.card}>
                 <View style={styles.cardTop}>
-                    <View style={[styles.categoryBadge, { backgroundColor: catColor + '18', borderColor: catColor + '40' }]}>
-                        <Text style={[styles.categoryText, { color: catColor }]}>{getCategoryLabel(item.category)}</Text>
+                    {/* Category is a plain tag, not a status — text differentiates, not color. */}
+                    <View style={styles.categoryBadge}>
+                        <Text style={styles.categoryText}>{getCategoryLabel(item.category)}</Text>
                     </View>
                     <Text style={styles.dateText}>{date}</Text>
                 </View>
@@ -232,7 +230,7 @@ export default function Expenses() {
                         <Text style={styles.amountText}>{Number(item.amount).toLocaleString()}₺</Text>
                         {item.note ? <Text style={styles.noteText}>{item.note}</Text> : null}
                     </View>
-                    <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteExpense(item.id)}>
+                    <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteExpense(item.id)} hitSlop={hitSlopFor(32)}>
                         <Text style={styles.deleteBtnText}>✕</Text>
                     </TouchableOpacity>
                 </View>
@@ -240,34 +238,43 @@ export default function Expenses() {
         );
     }
 
-    if (loading) {
-        return (
-            <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.danger} />
-            </View>
-        );
-    }
+    const filteredExpenses = React.useMemo(() => {
+        const q = expenseSearch.trim().toLowerCase();
+        return expenses.filter(expense => {
+            const matchesCategory = categoryFilter === 'all' || expense.category === categoryFilter;
+            const haystack = [expense.category, getCategoryLabel(expense.category), expense.note, expense.amount].join(' ').toLowerCase();
+            const matchesSearch = !q || haystack.includes(q);
+            return matchesCategory && matchesSearch;
+        });
+    }, [categoryFilter, expenseSearch, expenses, getCategoryLabel]);
+
+    const firstLoad = loading && expenses.length === 0;
 
     return (
         <View style={styles.container}>
             <View style={styles.screenHeader}>
                 <Text style={styles.screenTitle}>{copy.title}</Text>
                 <Text style={styles.screenSubtitle}>{copy.subtitle}</Text>
+                <SyncStatus timestamp={lastUpdated} syncing={refreshing || loading} label={copy.synced} syncingLabel={copy.refreshing} style={styles.syncStatus} />
             </View>
 
             {/* Total + Add */}
-            <View style={styles.topSection}>
-                <View style={styles.totalCard}>
-                    <Text style={styles.totalLabel}>{copy.totalExpenses}</Text>
-                    <Text style={styles.totalValue}>{totalExpenses.toLocaleString()}₺</Text>
+            {firstLoad ? (
+                <LoadingSkeleton rows={1} variant="metric" style={styles.loadingContent} />
+            ) : (
+                <View style={styles.topSection}>
+                    <View style={styles.totalCard}>
+                        <Text style={styles.totalLabel}>{copy.totalExpenses}</Text>
+                        <Text style={styles.totalValue}>{totalExpenses.toLocaleString()}₺</Text>
+                    </View>
+                    <TouchableOpacity
+                        style={styles.addToggle}
+                        onPress={() => setShowForm(!showForm)}
+                    >
+                        <Text style={styles.addToggleText}>{showForm ? '✕' : '+'}</Text>
+                    </TouchableOpacity>
                 </View>
-                <TouchableOpacity
-                    style={styles.addToggle}
-                    onPress={() => setShowForm(!showForm)}
-                >
-                    <Text style={styles.addToggleText}>{showForm ? '✕' : '+'}</Text>
-                </TouchableOpacity>
-            </View>
+            )}
 
             {/* Add Form */}
             {showForm && (
@@ -288,7 +295,6 @@ export default function Expenses() {
                                 style={[
                                     styles.categoryChip,
                                     category === cat && styles.categoryChipActive,
-                                    category === cat && { backgroundColor: getCategoryColor(cat) },
                                 ]}
                                 onPress={() => setCategory(cat)}
                             >
@@ -311,7 +317,7 @@ export default function Expenses() {
                         disabled={adding}
                     >
                         {adding ? (
-                            <ActivityIndicator color="#fff" />
+                            <ActivityIndicator color={colors.status.danger.fg} />
                         ) : (
                             <Text style={styles.submitBtnText}>{copy.addExpense}</Text>
                         )}
@@ -320,8 +326,24 @@ export default function Expenses() {
             )}
 
             {/* Expenses List */}
+            {!firstLoad ? <View style={styles.tools}>
+                <SearchInput value={expenseSearch} onChangeText={setExpenseSearch} placeholder={copy.search} />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                    <FilterChip label={copy.all} selected={categoryFilter === 'all'} onPress={() => setCategoryFilter('all')} count={expenses.length} />
+                    {EXPENSE_CATEGORIES.map(cat => (
+                        <FilterChip
+                            key={cat}
+                            label={getCategoryLabel(cat)}
+                            selected={categoryFilter === cat}
+                            onPress={() => setCategoryFilter(categoryFilter === cat ? 'all' : cat)}
+                            count={expenses.filter(expense => expense.category === cat).length}
+                            tone="danger"
+                        />
+                    ))}
+                </ScrollView>
+            </View> : null}
             <FlatList
-                data={expenses}
+                data={filteredExpenses}
                 keyExtractor={item => String(item.id)}
                 renderItem={renderExpense}
                 contentContainerStyle={styles.listContent}
@@ -329,210 +351,216 @@ export default function Expenses() {
                     <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
                 }
                 ListEmptyComponent={
-                    <View style={styles.emptyContainer}>
-                        <Text style={styles.emptyIcon}>📊</Text>
-                        <Text style={styles.emptyTitle}>{copy.noExpenses}</Text>
-                        <Text style={styles.emptyDesc}>{copy.empty}</Text>
-                    </View>
+                    firstLoad ? (
+                        <LoadingSkeleton rows={4} style={styles.loadingContent} />
+                    ) : <EmptyState
+                        icon="₺"
+                        title={copy.noExpenses}
+                        description={copy.empty}
+                        actionLabel={copy.newExpense}
+                        onAction={() => setShowForm(true)}
+                    />
                 }
+            />
+            <ConfirmDialog
+                visible={deleteId !== null}
+                title={copy.deleteTitle}
+                message={copy.areYouSure}
+                confirmLabel={copy.delete}
+                cancelLabel={copy.cancel}
+                destructive
+                onConfirm={confirmDeleteExpense}
+                onCancel={() => setDeleteId(null)}
             />
         </View>
     );
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
     },
-    loaderContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: colors.bg,
+    loadingContent: {
+        width: '100%',
+        paddingHorizontal: SPACING.lg,
     },
     topSection: {
         flexDirection: 'row',
-        padding: 16,
-        paddingTop: 8,
-        paddingBottom: 8,
-        gap: 10,
+        padding: SPACING.lg,
+        paddingTop: SPACING.sm,
+        paddingBottom: SPACING.sm,
+        gap: SPACING.md,
     },
     screenHeader: {
-        paddingHorizontal: 16,
-        paddingTop: 16,
-        paddingBottom: 4,
+        paddingHorizontal: SPACING.lg,
+        paddingTop: SPACING.lg,
+        paddingBottom: SPACING.xs,
     },
     screenTitle: {
-        fontSize: 24,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.4,
+        ...v.type.title,
+        color: colors.text.primary,
     },
     screenSubtitle: {
-        fontSize: 14,
-        color: colors.subtext,
-        lineHeight: 20,
+        ...v.type.body,
+        color: colors.text.secondary,
         marginTop: 3,
     },
+    syncStatus: { marginTop: SPACING.sm },
+    // Money going out reads as the danger tone throughout this whole screen
+    // (a deliberate, consistent status framing, not decoration) — so its
+    // text uses status.danger.fg, never text.primary.
     totalCard: {
         flex: 1,
-        backgroundColor: themeMode === 'dark' ? '#352026' : '#fff5f5',
-        borderRadius: 14,
-        padding: 18,
+        ...v.card,
+        ...v.dangerSurface,
+        padding: SPACING.lg,
         borderLeftWidth: 3,
-        borderLeftColor: colors.danger,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 3,
-        borderWidth: 1,
-        borderColor: themeMode === 'dark' ? '#6f3038' : '#fecaca',
     },
     totalLabel: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: colors.subtext,
+        ...v.type.label,
+        color: colors.status.danger.fg,
         textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        marginBottom: 4,
+        marginBottom: SPACING.xs,
     },
     totalValue: {
-        fontSize: 26,
-        fontWeight: '800',
-        color: colors.danger,
-        letterSpacing: -0.3,
+        ...v.type.title,
+        color: colors.status.danger.fg,
     },
+    // A solid saturated danger fill can't stay contrast-safe in both themes
+    // (see ConfirmDialog) — this uses the tint+fg pairing instead.
     addToggle: {
         width: 52,
         height: 52,
-        borderRadius: 12,
-        backgroundColor: colors.danger,
+        borderRadius: RADIUS.sm,
+        ...v.dangerSurface,
+        borderWidth: 1,
         alignItems: 'center',
         justifyContent: 'center',
         alignSelf: 'center',
     },
     addToggleText: {
-        color: '#fff',
-        fontSize: 24,
-        fontWeight: '600',
+        color: colors.status.danger.fg,
+        ...v.type.title,
     },
     form: {
-        marginHorizontal: 16,
-        marginBottom: 12,
-        backgroundColor: colors.surface,
-        borderRadius: 14,
-        padding: 16,
+        marginHorizontal: SPACING.lg,
+        marginBottom: SPACING.md,
+        backgroundColor: colors.bg.surface,
+        borderRadius: RADIUS.md,
+        padding: SPACING.lg,
         borderWidth: 1,
-        borderColor: themeMode === 'dark' ? '#6f3038' : '#fee2e2',
+        borderColor: colors.status.danger.bg,
         borderLeftWidth: 3,
-        borderLeftColor: colors.danger,
+        borderLeftColor: colors.status.danger.fg,
     },
     formTitle: {
-        fontSize: 18,
-        fontWeight: '800',
-        marginBottom: 12,
-        color: colors.text,
+        ...v.type.title,
+        marginBottom: SPACING.md,
+        color: colors.text.primary,
     },
     input: {
-        borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surfaceMuted,
-        borderRadius: 10,
-        padding: 12,
-        fontSize: 16,
-        marginBottom: 10,
-        color: colors.text,
+        ...v.input,
+        marginBottom: SPACING.sm,
     },
     inputLabel: {
-        fontSize: 12,
-        fontWeight: '700',
-        color: colors.subtext,
+        ...v.type.label,
+        color: colors.text.secondary,
         textTransform: 'uppercase',
         letterSpacing: 0.5,
-        marginBottom: 6,
+        marginBottom: SPACING.xs,
     },
     categoryRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 8,
-        marginBottom: 12,
+        gap: SPACING.sm,
+        marginBottom: SPACING.md,
     },
+    // Category is a plain tag, not a status — selection reads as the app's
+    // ordinary chip-selected state (the brand accent), same as any other
+    // pick-one-of-N control (ProductManagement's type/color pills, etc.).
     categoryChip: {
-        paddingHorizontal: 13,
-        paddingVertical: 9,
-        borderRadius: 999,
+        minHeight: 44,
+        justifyContent: 'center',
+        paddingHorizontal: SPACING.md,
+        paddingVertical: SPACING.sm,
+        borderRadius: RADIUS.pill,
         borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surfaceMuted,
+        borderColor: colors.border.default,
+        backgroundColor: colors.bg.raised,
     },
     categoryChipActive: {
-        borderColor: 'transparent',
+        borderColor: colors.accent.bg,
+        backgroundColor: colors.accent.bg,
     },
     categoryChipText: {
-        fontSize: 13,
-        fontWeight: '700',
-        color: colors.subtext,
+        ...v.type.label,
+        color: colors.text.secondary,
     },
     categoryChipTextActive: {
-        color: '#fff',
+        color: colors.accent.fg,
     },
     submitBtn: {
-        backgroundColor: colors.danger,
-        paddingVertical: 14,
-        borderRadius: 10,
+        ...v.dangerSurface,
+        paddingVertical: SPACING.md,
+        borderRadius: RADIUS.sm,
+        borderWidth: 1,
         alignItems: 'center',
-        marginTop: 4,
+        marginTop: SPACING.xs,
     },
     disabledBtn: {
         opacity: 0.6,
     },
     submitBtnText: {
-        color: '#fff',
-        fontWeight: '700',
-        fontSize: 14,
-        letterSpacing: 0.5,
+        color: colors.status.danger.fg,
+        ...v.type.label,
     },
     listContent: {
-        paddingHorizontal: 16,
-        paddingBottom: 40,
+        paddingHorizontal: SPACING.lg,
+        paddingBottom: SPACING.xxl + SPACING.sm,
     },
+    tools: {
+        paddingHorizontal: SPACING.lg,
+        gap: SPACING.sm,
+        marginBottom: SPACING.md,
+    },
+    filterRow: {
+        gap: SPACING.sm,
+        paddingRight: SPACING.xs,
+    },
+    // Plain divider accent, not status — neutral (matches other screens' card rails).
     card: {
-        backgroundColor: colors.surface,
-        borderRadius: 14,
-        padding: 14,
-        marginBottom: 10,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 3,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.cardCompact,
+        padding: SPACING.md,
+        marginBottom: SPACING.sm,
         borderLeftWidth: 3,
-        borderLeftColor: themeMode === 'dark' ? '#6f3038' : '#fee2e2',
+        borderLeftColor: colors.border.strong,
     },
     cardTop: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 8,
+        marginBottom: SPACING.sm,
     },
+    // Category is a plain tag, not a status — neutral, text differentiates.
     categoryBadge: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: SPACING.xs,
+        borderRadius: RADIUS.sm,
         borderWidth: 1,
+        borderColor: colors.border.default,
+        backgroundColor: colors.bg.raised,
     },
     categoryText: {
-        fontSize: 12,
+        ...v.type.caption,
         fontWeight: '700',
+        color: colors.text.primary,
     },
     dateText: {
-        fontSize: 12,
-        color: colors.subtext,
+        ...v.type.caption,
+        color: colors.text.secondary,
     },
     cardBottom: {
         flexDirection: 'row',
@@ -543,46 +571,27 @@ return StyleSheet.create({
         flex: 1,
     },
     amountText: {
-        fontSize: 20,
-        fontWeight: '800',
-        color: colors.text,
+        ...v.type.title,
+        color: colors.text.primary,
     },
     noteText: {
-        fontSize: 13,
-        color: colors.subtext,
+        ...v.type.label,
+        color: colors.text.secondary,
         marginTop: 2,
     },
+    // A genuine danger-tinted action (delete).
     deleteBtn: {
         width: 32,
         height: 32,
-        borderRadius: 8,
-        backgroundColor: themeMode === 'dark' ? '#352026' : '#fef2f2',
+        borderRadius: RADIUS.sm,
+        backgroundColor: colors.status.danger.bg,
         alignItems: 'center',
         justifyContent: 'center',
-        marginLeft: 12,
+        marginLeft: SPACING.md,
     },
     deleteBtnText: {
-        fontSize: 16,
-        color: colors.danger,
-        fontWeight: '600',
-    },
-    emptyContainer: {
-        alignItems: 'center',
-        paddingTop: 60,
-    },
-    emptyIcon: {
-        fontSize: 40,
-        marginBottom: 12,
-    },
-    emptyTitle: {
-        fontSize: 18,
-        fontWeight: '700',
-        color: colors.text,
-        marginBottom: 6,
-    },
-    emptyDesc: {
-        fontSize: 14,
-        color: colors.subtext,
+        ...v.type.heading,
+        color: colors.status.danger.fg,
     },
 });
 }

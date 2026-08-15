@@ -4,6 +4,7 @@ import { supabase } from '../core/supabase/client';
 
 export type KanbanStatus = 'idea' | 'todo' | 'in_progress' | 'waiting' | 'done';
 export type TaskLabel = 'mekan' | 'personel' | 'teklif' | 'yuniee' | 'finans' | 'ai' | 'kisisel' | 'saglik';
+export type TaskScope = 'yuniee' | 'irem' | 'yemre';
 
 export type Task = {
     id: number;
@@ -15,6 +16,7 @@ export type Task = {
     label: TaskLabel | null;
     waiting_reason: string | null;
     sort_order: number;
+    task_scope: TaskScope;
     created_at: string;
     updated_at: string | null;
 };
@@ -29,6 +31,7 @@ type RawTask = {
     label?: TaskLabel | null;
     waiting_reason?: string | null;
     sort_order?: number | null;
+    task_scope?: TaskScope | null;
     created_at: string;
     updated_at?: string | null;
 };
@@ -68,6 +71,7 @@ function normalizeTask(row: RawTask): Task {
         label: row.label ?? null,
         waiting_reason: row.waiting_reason ?? null,
         sort_order: row.sort_order ?? 0,
+        task_scope: row.task_scope ?? 'yuniee',
         created_at: row.created_at,
         updated_at: row.updated_at ?? null,
     };
@@ -91,10 +95,11 @@ function legacyTaskPayload(payload: Record<string, unknown>) {
 }
 
 export const todoService = {
-    async getTasks(): Promise<{ data: Task[] | null; error: unknown }> {
+    async getTasks(scope: TaskScope = 'yuniee'): Promise<{ data: Task[] | null; error: unknown }> {
         const { data, error } = await supabase
             .from('tasks')
             .select('*')
+            .eq('task_scope', scope)
             .order('created_at', { ascending: false });
 
         if (error || !data) return { data: null, error };
@@ -112,6 +117,7 @@ export const todoService = {
     async addTask(
         title: string,
         status: KanbanStatus = 'todo',
+        scope: TaskScope = 'yuniee',
         opts?: {
             due_date?: string | null;
             label?: TaskLabel | null;
@@ -129,6 +135,7 @@ export const todoService = {
             description: opts?.description || null,
             waiting_reason: opts?.waiting_reason || null,
             sort_order: 0,
+            task_scope: scope,
         };
 
         let { data, error } = await supabase
@@ -152,17 +159,20 @@ export const todoService = {
 
     async updateTask(
         id: number,
-        updates: Partial<Pick<Task, 'title' | 'description' | 'due_date' | 'label' | 'waiting_reason' | 'status' | 'sort_order' | 'completed'>>
+        updates: Partial<Pick<Task, 'title' | 'description' | 'due_date' | 'label' | 'waiting_reason' | 'status' | 'sort_order' | 'completed'>>,
+        scope?: TaskScope
     ): Promise<{ success: boolean; error: unknown }> {
         // If status is being set to done, also set completed = true
         const payload: Record<string, unknown> = { ...updates };
         if (updates.status === 'done') payload.completed = true;
         else if (updates.status) payload.completed = false;
 
-        let { error } = await supabase
+        let query = supabase
             .from('tasks')
             .update(payload)
             .eq('id', id);
+        if (scope) query = query.eq('task_scope', scope);
+        let { error } = await query;
 
         if (isMissingColumnError(error)) {
             const fallback = await supabase
@@ -175,7 +185,7 @@ export const todoService = {
         return { success: !error, error };
     },
 
-    async moveTask(id: number, newStatus: KanbanStatus, waitingReason?: string): Promise<{ success: boolean; error: unknown }> {
+    async moveTask(id: number, newStatus: KanbanStatus, waitingReason?: string, scope?: TaskScope): Promise<{ success: boolean; error: unknown }> {
         const completed = newStatus === 'done';
         const payload: Record<string, unknown> = {
             status: newStatus,
@@ -188,10 +198,12 @@ export const todoService = {
             payload.waiting_reason = null;
         }
 
-        let { error } = await supabase
+        let query = supabase
             .from('tasks')
             .update(payload)
             .eq('id', id);
+        if (scope) query = query.eq('task_scope', scope);
+        let { error } = await query;
 
         if (isMissingColumnError(error)) {
             const fallback = await supabase
@@ -204,11 +216,13 @@ export const todoService = {
         return { success: !error, error };
     },
 
-    async deleteTask(id: number): Promise<{ success: boolean; error: unknown }> {
-        const { error } = await supabase
+    async deleteTask(id: number, scope?: TaskScope): Promise<{ success: boolean; error: unknown }> {
+        let query = supabase
             .from('tasks')
             .delete()
             .eq('id', id);
+        if (scope) query = query.eq('task_scope', scope);
+        const { error } = await query;
 
         return { success: !error, error };
     },

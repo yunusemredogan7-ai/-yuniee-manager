@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
     Alert,
     Modal,
+    RefreshControl,
     ScrollView,
     StyleSheet,
     Text,
@@ -18,6 +18,9 @@ import {
 } from '../src/services/costService';
 import { PRODUCT_TYPES, ProductType } from '../src/services/productsService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { ConfirmDialog, LoadingSkeleton, StatusBadge, SyncStatus } from '../src/components/ui';
+import { OVERLAY_SCRIM, RADIUS, SPACING } from '../src/core/theme/tokens';
 
 type DraftRule = {
     id: number | null;
@@ -42,8 +45,8 @@ const EMPTY_DRAFT: DraftRule = {
 };
 
 export default function ProductRecipes() {
-    const { colors, language } = useAppSettings();
-    const styles = makeStyles(colors);
+    const { colors, language, themeMode } = useAppSettings();
+    const styles = makeStyles(colors, themeMode);
     const copy = language === 'tr' ? {
         title: 'Ürün Reçeteleri',
         subtitle: 'Paketleme kuralları ürün tipine göre çalışır. Renk ve beden paketlemeyi değiştirmez.',
@@ -78,6 +81,10 @@ export default function ProductRecipes() {
         deleteFailed: 'Kural silinemedi',
         tryAgain: 'Lütfen tekrar deneyin.',
         qty: 'adet',
+        deleteTitle: 'Kuralı sil',
+        deleteWarning: 'Bu paketleme kuralı silinecek. Bu işlem geri alınamaz.',
+        synced: 'Senkron',
+        refreshing: 'Yenileniyor...',
     } : {
         title: 'Product Recipes',
         subtitle: 'Packaging rules are product-type based. Color and size do not change packaging.',
@@ -112,12 +119,19 @@ export default function ProductRecipes() {
         deleteFailed: 'Could not delete rule',
         tryAgain: 'Please try again.',
         qty: 'qty',
+        deleteTitle: 'Delete rule',
+        deleteWarning: 'This packaging rule will be deleted. This cannot be undone.',
+        synced: 'Synced',
+        refreshing: 'Refreshing...',
     };
     const [materials, setMaterials] = useState<PackagingMaterial[]>([]);
     const [rules, setRules] = useState<ProductPackagingRule[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [saving, setSaving] = useState(false);
     const [draft, setDraft] = useState<DraftRule | null>(null);
+    const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
     const rulesByType = useMemo(() => {
         const grouped = new Map<ProductType, ProductPackagingRule[]>();
@@ -138,7 +152,9 @@ export default function ProductRecipes() {
         ]);
         if (materialsRes.data) setMaterials(materialsRes.data);
         if (rulesRes.data) setRules(rulesRes.data);
+        setLastUpdated(new Date());
         setLoading(false);
+        setRefreshing(false);
     }
 
     useEffect(() => {
@@ -218,6 +234,11 @@ export default function ProductRecipes() {
         loadData();
     }
 
+    function onRefresh() {
+        setRefreshing(true);
+        loadData();
+    }
+
     function materialName(id: number | null) {
         return materials.find(m => m.id === id)?.name || 'Material';
     }
@@ -231,15 +252,20 @@ export default function ProductRecipes() {
     if (loading) {
         return (
             <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.primary} />
+                <LoadingSkeleton rows={5} style={styles.loadingContent} />
             </View>
         );
     }
 
     return (
-        <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <ScrollView
+            style={styles.container}
+            contentContainerStyle={styles.content}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        >
             <Text style={styles.title}>{copy.title}</Text>
             <Text style={styles.subtitle}>{copy.subtitle}</Text>
+            <SyncStatus timestamp={lastUpdated} syncing={refreshing || loading} label={copy.synced} syncingLabel={copy.refreshing} style={styles.syncStatus} />
 
             <View style={styles.materialsCard}>
                 <Text style={styles.sectionLabel}>{copy.materialCosts}</Text>
@@ -279,9 +305,7 @@ export default function ProductRecipes() {
                                         <Text style={styles.ruleMaterial}>{materialName(rule.material_id)}</Text>
                                         <Text style={styles.ruleSubtitle}>{ruleSubtitle(rule)}</Text>
                                     </View>
-                                    <Text style={[styles.ruleState, !rule.active && styles.ruleStateInactive]}>
-                                        {rule.active ? copy.active : copy.off}
-                                    </Text>
+                                    <StatusBadge label={rule.active ? copy.active : copy.off} tone={rule.active ? 'success' : 'muted'} />
                                 </TouchableOpacity>
                             ))
                         )}
@@ -351,7 +375,7 @@ export default function ProductRecipes() {
                                     onChangeText={value => setDraft(current => current ? { ...current, max_qty: value } : current)}
                                     keyboardType="numeric"
                                     placeholder={copy.none}
-                                    placeholderTextColor={colors.subtext}
+                                    placeholderTextColor={colors.text.secondary}
                                     style={styles.input}
                                 />
                             </View>
@@ -366,7 +390,7 @@ export default function ProductRecipes() {
 
                         <View style={styles.modalActions}>
                             {draft?.id ? (
-                                <TouchableOpacity style={styles.deleteButton} onPress={deleteRule} disabled={saving}>
+                                <TouchableOpacity style={styles.deleteButton} onPress={() => setConfirmDeleteOpen(true)} disabled={saving}>
                                     <Text style={styles.deleteText}>{copy.delete}</Text>
                                 </TouchableOpacity>
                             ) : null}
@@ -380,79 +404,88 @@ export default function ProductRecipes() {
                     </View>
                 </View>
             </Modal>
+            <ConfirmDialog
+                visible={confirmDeleteOpen}
+                title={copy.deleteTitle}
+                message={copy.deleteWarning}
+                confirmLabel={copy.delete}
+                cancelLabel={copy.cancel}
+                destructive
+                onConfirm={() => {
+                    setConfirmDeleteOpen(false);
+                    deleteRule();
+                }}
+                onCancel={() => setConfirmDeleteOpen(false)}
+            />
         </ScrollView>
     );
 }
 
-function makeStyles(colors: ReturnType<typeof useAppSettings>['colors']) {
+function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+    const v = createVisualSystem(colors, themeMode);
     return StyleSheet.create({
-        container: { flex: 1, backgroundColor: colors.bg },
-        content: { padding: 20, paddingBottom: 44 },
-        loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg },
-        title: { fontSize: 28, fontWeight: '800', color: colors.text, letterSpacing: -0.4 },
-        subtitle: { fontSize: 14, color: colors.subtext, marginTop: 4, marginBottom: 18, lineHeight: 20 },
+        container: { flex: 1, backgroundColor: colors.bg.page },
+        content: { padding: SPACING.lg, paddingBottom: SPACING.xxl + SPACING.md },
+        loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg.page },
+        loadingContent: { width: '100%', paddingHorizontal: SPACING.lg },
+        title: { ...v.type.title, color: colors.text.primary },
+        subtitle: { ...v.type.body, color: colors.text.secondary, marginTop: SPACING.xs, marginBottom: SPACING.lg },
+        syncStatus: { marginBottom: SPACING.md },
         materialsCard: {
-            backgroundColor: colors.surface,
-            borderRadius: 16,
-            padding: 16,
-            borderWidth: 1,
-            borderColor: colors.border,
-            marginBottom: 14,
+            ...v.card,
+            marginBottom: SPACING.md,
         },
-        sectionLabel: { fontSize: 12, fontWeight: '800', color: colors.subtext, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 },
-        materialsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-        materialChip: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+        sectionLabel: { ...v.type.label, color: colors.text.secondary, textTransform: 'uppercase', marginBottom: SPACING.md },
+        materialsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
+        materialChip: { backgroundColor: colors.bg.raised, borderColor: colors.border.default, borderWidth: 1, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.sm, paddingVertical: SPACING.sm },
         inactiveChip: { opacity: 0.5 },
-        materialName: { fontSize: 13, fontWeight: '700', color: colors.text },
-        materialCost: { fontSize: 12, fontWeight: '800', color: colors.primary, marginTop: 2 },
+        materialName: { ...v.type.label, fontWeight: '700', color: colors.text.primary },
+        // Standalone highlighted price on a neutral chip — accent, not a status.
+        materialCost: { ...v.type.caption, fontWeight: '700', color: colors.accent.bg, marginTop: 2 },
         ruleCard: {
-            backgroundColor: colors.surface,
-            borderRadius: 16,
-            padding: 16,
-            borderWidth: 1,
-            borderColor: colors.border,
-            marginBottom: 12,
+            ...v.card,
+            marginBottom: SPACING.md,
         },
-        ruleHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 },
-        ruleType: { fontSize: 18, fontWeight: '800', color: colors.text },
-        ruleMeta: { fontSize: 12, color: colors.subtext, marginTop: 2 },
-        addRuleButton: { backgroundColor: colors.primary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
-        addRuleText: { color: '#fff', fontWeight: '800', fontSize: 12 },
-        emptyRule: { backgroundColor: colors.surfaceMuted, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: colors.border },
-        emptyRuleText: { fontSize: 13, color: colors.subtext, lineHeight: 18 },
-        ruleRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surfaceMuted, borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: colors.border },
-        ruleDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary, marginRight: 10 },
+        ruleHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md, gap: SPACING.md },
+        ruleType: { ...v.type.title, color: colors.text.primary },
+        ruleMeta: { ...v.type.caption, color: colors.text.secondary, marginTop: 2 },
+        addRuleButton: { backgroundColor: colors.accent.bg, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, minHeight: 44, justifyContent: 'center' },
+        addRuleText: { ...v.type.caption, color: colors.accent.fg, fontWeight: '700' },
+        emptyRule: { backgroundColor: colors.bg.raised, borderRadius: RADIUS.md, padding: SPACING.md, borderWidth: 1, borderColor: colors.border.default },
+        emptyRuleText: { ...v.type.label, color: colors.text.secondary },
+        ruleRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.bg.raised, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.sm, borderWidth: 1, borderColor: colors.border.default },
+        // A single consistent accent-colored bullet marker, not a multi-hue system.
+        ruleDot: { width: 8, height: 8, borderRadius: RADIUS.pill, backgroundColor: colors.accent.bg, marginRight: SPACING.sm },
         ruleRowBody: { flex: 1 },
-        ruleMaterial: { fontSize: 14, fontWeight: '800', color: colors.text },
-        ruleSubtitle: { fontSize: 12, color: colors.subtext, marginTop: 2 },
-        ruleState: { fontSize: 11, fontWeight: '800', color: colors.success },
-        ruleStateInactive: { color: colors.subtext },
-        modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
-        modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 34 },
-        modalTitle: { fontSize: 20, fontWeight: '800', color: colors.text },
-        modalSubtitle: { fontSize: 14, color: colors.subtext, marginTop: 2, marginBottom: 16 },
-        inputLabel: { fontSize: 12, fontWeight: '800', color: colors.subtext, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 7 },
-        choiceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
-        choice: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border },
-        choiceActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-        choiceText: { fontSize: 12, fontWeight: '800', color: colors.subtext },
-        choiceTextActive: { color: '#fff' },
-        segmentRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
-        segment: { flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
-        segmentActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-        segmentText: { fontSize: 13, fontWeight: '800', color: colors.subtext },
-        segmentTextActive: { color: '#fff' },
-        inputRow: { flexDirection: 'row', gap: 8 },
+        ruleMaterial: { ...v.type.body, fontWeight: '700', color: colors.text.primary },
+        ruleSubtitle: { ...v.type.caption, color: colors.text.secondary, marginTop: 2 },
+        modalOverlay: { flex: 1, backgroundColor: OVERLAY_SCRIM, justifyContent: 'flex-end' },
+        modalCard: { backgroundColor: colors.bg.surface, borderTopLeftRadius: RADIUS.md, borderTopRightRadius: RADIUS.md, padding: SPACING.lg, paddingBottom: SPACING.xxl },
+        modalTitle: { ...v.type.title, color: colors.text.primary },
+        modalSubtitle: { ...v.type.body, color: colors.text.secondary, marginTop: 2, marginBottom: SPACING.lg },
+        inputLabel: { ...v.type.caption, fontWeight: '700', color: colors.text.secondary, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: SPACING.xs },
+        choiceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginBottom: SPACING.lg },
+        // Selection reads as the app's ordinary chip-selected state (the brand accent).
+        choice: { minHeight: 44, justifyContent: 'center', paddingHorizontal: SPACING.sm, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, backgroundColor: colors.bg.raised, borderWidth: 1, borderColor: colors.border.default },
+        choiceActive: { backgroundColor: colors.accent.bg, borderColor: colors.accent.bg },
+        choiceText: { ...v.type.caption, fontWeight: '700', color: colors.text.secondary },
+        choiceTextActive: { color: colors.accent.fg },
+        segmentRow: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.lg },
+        segment: { flex: 1, minHeight: 44, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, backgroundColor: colors.bg.raised, borderWidth: 1, borderColor: colors.border.default, alignItems: 'center', justifyContent: 'center' },
+        segmentActive: { backgroundColor: colors.accent.bg, borderColor: colors.accent.bg },
+        segmentText: { ...v.type.label, fontWeight: '700', color: colors.text.secondary },
+        segmentTextActive: { color: colors.accent.fg },
+        inputRow: { flexDirection: 'row', gap: SPACING.sm },
         inputGroup: { flex: 1 },
-        input: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10, fontSize: 14 },
-        activeToggle: { backgroundColor: colors.surfaceMuted, borderRadius: 12, padding: 12, marginTop: 14, borderWidth: 1, borderColor: colors.border },
-        activeToggleText: { fontSize: 14, fontWeight: '800', color: colors.text, textAlign: 'center' },
-        modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 18 },
-        deleteButton: { marginRight: 'auto', paddingHorizontal: 12, paddingVertical: 11 },
-        deleteText: { color: colors.danger, fontWeight: '800' },
-        cancelButton: { paddingHorizontal: 14, paddingVertical: 11, borderRadius: 10, backgroundColor: colors.surfaceMuted },
-        cancelText: { color: colors.text, fontWeight: '800' },
-        saveButton: { paddingHorizontal: 16, paddingVertical: 11, borderRadius: 10, backgroundColor: colors.primary },
-        saveText: { color: '#fff', fontWeight: '800' },
+        input: { ...v.input },
+        activeToggle: { backgroundColor: colors.bg.raised, borderRadius: RADIUS.md, padding: SPACING.md, marginTop: SPACING.md, borderWidth: 1, borderColor: colors.border.default, minHeight: 44, justifyContent: 'center' },
+        activeToggleText: { ...v.type.body, fontWeight: '700', color: colors.text.primary, textAlign: 'center' },
+        modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: SPACING.sm, marginTop: SPACING.lg },
+        deleteButton: { marginRight: 'auto', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, minHeight: 44, justifyContent: 'center' },
+        deleteText: { color: colors.status.danger.fg, fontWeight: '700' },
+        cancelButton: { paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, backgroundColor: colors.bg.raised, minHeight: 44, justifyContent: 'center' },
+        cancelText: { color: colors.text.primary, fontWeight: '700' },
+        saveButton: { paddingHorizontal: SPACING.lg, paddingVertical: SPACING.sm, borderRadius: RADIUS.sm, backgroundColor: colors.accent.bg, minHeight: 44, justifyContent: 'center' },
+        saveText: { color: colors.accent.fg, fontWeight: '700' },
     });
 }

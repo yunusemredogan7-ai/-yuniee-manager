@@ -5,12 +5,15 @@ import {
     Text,
     FlatList,
     StyleSheet,
-    ActivityIndicator,
     RefreshControl,
+    ScrollView,
 } from 'react-native';
 import { supabase } from '../src/core/supabase/client';
 import { costService } from '../src/services/costService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { EmptyState, FilterChip, LoadingSkeleton, SearchInput, StatusBadge } from '../src/components/ui';
+import { SPACING } from '../src/core/theme/tokens';
 
 type SaleEntry = {
     id: number;
@@ -36,6 +39,12 @@ export default function SalesHistory() {
         title: 'Satış Geçmişi',
         subtitle: 'Teslim edilen siparişler, ciro ve kar takibi.',
         revenue: 'Ciro',
+        search: 'Satış ara',
+        all: 'Tümü',
+        ordersOnly: 'Siparişler',
+        manualOnly: 'Manuel',
+        sortDate: 'Tarih',
+        sortAmount: 'Tutar',
     } : {
         qty: 'Qty',
         profit: 'Profit',
@@ -46,10 +55,19 @@ export default function SalesHistory() {
         title: 'Sales History',
         subtitle: 'Delivered orders, revenue, and profit trail.',
         revenue: 'Revenue',
+        search: 'Search sales',
+        all: 'All',
+        ordersOnly: 'Orders',
+        manualOnly: 'Manual',
+        sortDate: 'Date',
+        sortAmount: 'Amount',
     };
     const [sales, setSales] = useState<SaleEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [salesSearch, setSalesSearch] = useState('');
+    const [sourceFilter, setSourceFilter] = useState<'all' | 'order' | 'manual'>('all');
+    const [sortMode, setSortMode] = useState<'date' | 'amount'>('date');
 
     const fetchSales = useCallback(async () => {
         try {
@@ -186,6 +204,21 @@ export default function SalesHistory() {
         fetchSales();
     };
 
+    const filteredSales = React.useMemo(() => {
+        const q = salesSearch.trim().toLowerCase();
+        return sales
+            .filter(sale => {
+                const matchesSource = sourceFilter === 'all' || sale.source === sourceFilter;
+                const haystack = [sale.product_name, sale.size, sale.source, sale.quantity, sale.revenue].join(' ').toLowerCase();
+                const matchesSearch = !q || haystack.includes(q);
+                return matchesSource && matchesSearch;
+            })
+            .sort((a, b) => sortMode === 'amount'
+                ? b.revenue - a.revenue
+                : new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            );
+    }, [sales, salesSearch, sortMode, sourceFilter]);
+
     function renderItem({ item }: { item: SaleEntry }) {
         const date = new Date(item.created_at).toLocaleString(language === 'tr' ? 'tr-TR' : 'en-US', {
             day: '2-digit', month: '2-digit', year: 'numeric',
@@ -203,28 +236,18 @@ export default function SalesHistory() {
                             <Text style={styles.sizeText}>{copy.qty}: {item.quantity}</Text>
                         )}
                     </View>
-                    <Text style={styles.dateText}>{date}</Text>
+                    <StatusBadge label={date} tone="muted" />
                 </View>
                 <View style={styles.cardBody}>
                     <View>
                         <Text style={styles.metricLabel}>{copy.revenue}</Text>
                         <Text style={styles.revenueText}>{item.revenue.toLocaleString()}₺</Text>
                     </View>
-                    <Text style={styles.profitText}>
-                        {copy.profit}: {item.profit.toLocaleString()}₺
-                    </Text>
+                    <StatusBadge label={`${copy.profit}: ${item.profit.toLocaleString()}₺`} tone="success" />
                 </View>
                 {item.source && item.source !== 'manual' ? (
-                    <Text style={styles.sourceText}>{item.source === 'order' ? copy.orderSource : item.source}</Text>
+                    <StatusBadge label={item.source === 'order' ? copy.orderSource : item.source} tone="primary" style={styles.sourceBadge} />
                 ) : null}
-            </View>
-        );
-    }
-
-    if (loading) {
-        return (
-            <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.success} />
             </View>
         );
     }
@@ -232,7 +255,7 @@ export default function SalesHistory() {
     return (
         <View style={styles.container}>
             <FlatList
-                data={sales}
+                data={filteredSales}
                 keyExtractor={(item, idx) => `${item.id}-${idx}`}
                 renderItem={renderItem}
                 contentContainerStyle={styles.listContent}
@@ -240,19 +263,27 @@ export default function SalesHistory() {
                     <View style={styles.screenHeader}>
                         <Text style={styles.screenTitle}>{copy.title}</Text>
                         <Text style={styles.screenSubtitle}>{copy.subtitle}</Text>
+                        <View style={styles.tools}>
+                            <SearchInput value={salesSearch} onChangeText={setSalesSearch} placeholder={copy.search} />
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                                <FilterChip label={copy.all} selected={sourceFilter === 'all'} onPress={() => setSourceFilter('all')} count={sales.length} />
+                                <FilterChip label={copy.ordersOnly} selected={sourceFilter === 'order'} onPress={() => setSourceFilter(sourceFilter === 'order' ? 'all' : 'order')} tone="primary" />
+                                <FilterChip label={copy.manualOnly} selected={sourceFilter === 'manual'} onPress={() => setSourceFilter(sourceFilter === 'manual' ? 'all' : 'manual')} />
+                                <FilterChip label={copy.sortDate} selected={sortMode === 'date'} onPress={() => setSortMode('date')} />
+                                <FilterChip label={copy.sortAmount} selected={sortMode === 'amount'} onPress={() => setSortMode('amount')} tone="success" />
+                            </ScrollView>
+                        </View>
                     </View>
                 }
                 refreshControl={
                     <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
                 }
                 ListEmptyComponent={
-                    <View style={styles.emptyContainer}>
-                        <Text style={styles.emptyIcon}>📈</Text>
-                        <Text style={styles.emptyTitle}>{copy.noSales}</Text>
-                        <Text style={styles.emptyDesc}>
-                            {copy.empty}
-                        </Text>
-                    </View>
+                    loading ? (
+                        <LoadingSkeleton rows={5} style={styles.loadingContent} />
+                    ) : (
+                        <EmptyState icon="₺" title={copy.noSales} description={copy.empty} />
+                    )
                 }
             />
         </View>
@@ -260,74 +291,71 @@ export default function SalesHistory() {
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
     },
     loaderContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
+    },
+    loadingContent: {
+        width: '100%',
+        paddingHorizontal: SPACING.lg,
     },
     listContent: {
-        padding: 20,
-        paddingBottom: 40,
+        padding: SPACING.lg,
+        paddingBottom: SPACING.xxl + SPACING.sm,
     },
     screenHeader: {
-        marginBottom: 14,
+        marginBottom: SPACING.md,
     },
     screenTitle: {
-        fontSize: 24,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.4,
+        ...v.type.title,
+        color: colors.text.primary,
     },
     screenSubtitle: {
-        fontSize: 14,
-        color: colors.subtext,
-        lineHeight: 20,
+        ...v.type.body,
+        color: colors.text.secondary,
         marginTop: 3,
     },
+    tools: {
+        gap: SPACING.sm,
+        marginTop: SPACING.md,
+    },
+    filterRow: {
+        gap: SPACING.sm,
+        paddingRight: SPACING.xs,
+    },
+    // Plain divider accent, not status — neutral (matches other screens' card rails).
     card: {
-        backgroundColor: colors.surface,
-        borderRadius: 14,
-        padding: 14,
-        marginBottom: 10,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 3,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.card,
+        padding: SPACING.md,
+        marginBottom: SPACING.sm,
         borderLeftWidth: 3,
-        borderLeftColor: themeMode === 'dark' ? '#335f44' : '#bbf7d0',
+        borderLeftColor: colors.border.strong,
     },
     cardHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'flex-start',
-        marginBottom: 8,
+        marginBottom: SPACING.sm,
     },
     cardHeaderLeft: {
         flex: 1,
     },
     productName: {
-        fontSize: 15,
-        fontWeight: '700',
-        color: colors.text,
+        ...v.type.heading,
+        color: colors.text.primary,
         marginBottom: 2,
     },
     sizeText: {
-        fontSize: 13,
-        color: colors.subtext,
-    },
-    dateText: {
-        fontSize: 12,
-        color: colors.subtext,
-        marginLeft: 10,
+        ...v.type.label,
+        color: colors.text.secondary,
     },
     cardBody: {
         flexDirection: 'row',
@@ -335,53 +363,18 @@ return StyleSheet.create({
         alignItems: 'center',
     },
     revenueText: {
-        fontSize: 18,
-        fontWeight: '800',
-        color: colors.text,
+        ...v.type.title,
+        color: colors.text.primary,
     },
     metricLabel: {
-        fontSize: 11,
-        color: colors.subtext,
-        fontWeight: '700',
+        ...v.type.label,
+        color: colors.text.secondary,
         textTransform: 'uppercase',
-        letterSpacing: 0.5,
         marginBottom: 2,
     },
-    profitText: {
-        fontSize: 14,
-        color: colors.success,
-        fontWeight: '700',
-    },
-    sourceText: {
-        marginTop: 6,
-        fontSize: 11,
-        color: colors.primary,
-        fontWeight: '600',
-        backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff',
+    sourceBadge: {
+        marginTop: SPACING.xs,
         alignSelf: 'flex-start',
-        paddingHorizontal: 6,
-        paddingVertical: 1,
-        borderRadius: 4,
-        overflow: 'hidden',
-    },
-    emptyContainer: {
-        alignItems: 'center',
-        paddingTop: 60,
-    },
-    emptyIcon: {
-        fontSize: 40,
-        marginBottom: 12,
-    },
-    emptyTitle: {
-        fontSize: 18,
-        fontWeight: '700',
-        color: colors.text,
-        marginBottom: 6,
-    },
-    emptyDesc: {
-        fontSize: 14,
-        color: colors.subtext,
-        textAlign: 'center',
     },
 });
 }

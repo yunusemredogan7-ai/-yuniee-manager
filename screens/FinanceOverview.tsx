@@ -1,10 +1,9 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
     View,
     Text,
     StyleSheet,
-    ActivityIndicator,
     TouchableOpacity,
     RefreshControl,
     ScrollView,
@@ -12,6 +11,11 @@ import {
 import { dashboardService } from '../src/services/dashboardService';
 import { expensesService } from '../src/services/expensesService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { LoadingSkeleton, MetricCard, SectionHeader } from '../src/components/ui';
+import { RADIUS, SPACING } from '../src/core/theme/tokens';
+
+const FOCUS_FRESH_MS = 15000;
 
 export default function FinanceOverview() {
     const { colors, language, themeMode } = useAppSettings();
@@ -26,9 +30,6 @@ export default function FinanceOverview() {
         netProfit: 'Net Kar',
         salesExpenses: 'SATIŞ & GİDERLER',
         salesHistory: 'Satış Geçmişi',
-        costManagement: 'MALİYET YÖNETİMİ',
-        packagingMaterials: 'Paketleme Malzemeleri',
-        productRecipes: 'Ürün Reçeteleri',
     } : {
         title: 'Finance',
         performance: "TODAY'S PERFORMANCE",
@@ -39,19 +40,29 @@ export default function FinanceOverview() {
         netProfit: 'Net Profit',
         salesExpenses: 'SALES & EXPENSES',
         salesHistory: 'Sales History',
-        costManagement: 'COST MANAGEMENT',
-        packagingMaterials: 'Packaging Materials',
-        productRecipes: 'Product Recipes',
     };
     const navigation = useNavigation<any>();
     const [loading, setLoading] = useState(true);
+    const [hasLoaded, setHasLoaded] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [revenue, setRevenue] = useState(0);
     const [profit, setProfit] = useState(0);
     const [itemsSold, setItemsSold] = useState(0);
     const [todayExpenses, setTodayExpenses] = useState(0);
+    const fetchingRef = useRef(false);
+    const lastFetchRef = useRef(0);
 
-    const fetchData = useCallback(async () => {
+    const fetchData = useCallback(async (force = false) => {
+        if (!force && lastFetchRef.current > 0 && Date.now() - lastFetchRef.current < FOCUS_FRESH_MS) {
+            setLoading(false);
+            setRefreshing(false);
+            return;
+        }
+        if (fetchingRef.current) {
+            setRefreshing(false);
+            return;
+        }
+        fetchingRef.current = true;
         try {
             const [rev, prof, items, expenses] = await Promise.all([
                 dashboardService.getRevenue(),
@@ -63,11 +74,14 @@ export default function FinanceOverview() {
             setProfit(prof);
             setItemsSold(items);
             setTodayExpenses(expenses);
+            setHasLoaded(true);
+            lastFetchRef.current = Date.now();
         } catch (err) {
             console.log('FinanceOverview fetch error:', err);
         } finally {
             setLoading(false);
             setRefreshing(false);
+            fetchingRef.current = false;
         }
     }, []);
 
@@ -79,19 +93,12 @@ export default function FinanceOverview() {
 
     const onRefresh = () => {
         setRefreshing(true);
-        fetchData();
+        fetchData(true);
     };
 
     const netProfit = profit - todayExpenses;
     const isNetPositive = netProfit >= 0;
-
-    if (loading) {
-        return (
-            <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.success} />
-            </View>
-        );
-    }
+    const firstLoad = loading && !hasLoaded;
 
     return (
         <ScrollView
@@ -103,42 +110,30 @@ export default function FinanceOverview() {
 
             {/* ── Metrics ── */}
             <View style={styles.metricsSection}>
-                <Text style={styles.sectionLabel}>{copy.performance}</Text>
-                <View style={styles.metricsGrid}>
-                    <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>{copy.revenue}</Text>
-                        <Text style={styles.metricValue}>{revenue.toLocaleString()}₺</Text>
+                <SectionHeader title={copy.performance} />
+                {firstLoad ? (
+                    <LoadingSkeleton rows={4} variant="metric" style={styles.loadingContent} />
+                ) : (
+                    <View style={styles.metricsGrid}>
+                        <MetricCard label={copy.revenue} value={`${revenue.toLocaleString()}₺`} style={styles.metricCard} />
+                        <MetricCard label={copy.itemsSold} value={itemsSold} style={styles.metricCard} />
+                        <MetricCard label={copy.grossProfit} value={`${profit.toLocaleString()}₺`} tone="success" style={styles.metricCard} />
+                        <MetricCard label={copy.expenses} value={`${todayExpenses.toLocaleString()}₺`} tone="danger" style={styles.metricCard} />
                     </View>
-                    <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>{copy.itemsSold}</Text>
-                        <Text style={styles.metricValue}>{itemsSold}</Text>
-                    </View>
-                    <View style={[styles.metricCard, styles.metricAccent]}>
-                        <Text style={styles.metricLabel}>{copy.grossProfit}</Text>
-                        <Text style={[styles.metricValue, styles.profitTextGreen]}>
-                            {profit.toLocaleString()}₺
-                        </Text>
-                    </View>
-                    <View style={[styles.metricCard, styles.metricExpense]}>
-                        <Text style={styles.metricLabel}>{copy.expenses}</Text>
-                        <Text style={[styles.metricValue, styles.expenseText]}>
-                            {todayExpenses.toLocaleString()}₺
-                        </Text>
-                    </View>
-                </View>
+                )}
 
                 {/* Net Profit Banner */}
-                <View style={[styles.netProfitBanner, isNetPositive ? styles.netPositive : styles.netNegative]}>
-                    <Text style={styles.netProfitLabel}>{copy.netProfit}</Text>
+                {!firstLoad ? <View style={[styles.netProfitBanner, isNetPositive ? styles.netPositive : styles.netNegative]}>
+                    <Text style={[styles.netProfitLabel, isNetPositive ? styles.profitTextGreen : styles.profitTextRed]}>{copy.netProfit}</Text>
                     <Text style={[styles.netProfitValue, isNetPositive ? styles.profitTextGreen : styles.profitTextRed]}>
                         {isNetPositive ? '' : '−'}{Math.abs(netProfit).toLocaleString()}₺
                     </Text>
-                </View>
+                </View> : null}
             </View>
 
             {/* ── Quick Access ── */}
             <View style={styles.navSection}>
-                <Text style={styles.sectionLabel}>{copy.salesExpenses}</Text>
+                <SectionHeader title={copy.salesExpenses} />
                 <TouchableOpacity
                     style={styles.navRow}
                     onPress={() => navigation.navigate('SalesHistory')}
@@ -155,171 +150,93 @@ export default function FinanceOverview() {
                 </TouchableOpacity>
             </View>
 
-            <View style={styles.navSection}>
-                <Text style={styles.sectionLabel}>{copy.costManagement}</Text>
-                <TouchableOpacity
-                    style={styles.navRow}
-                    onPress={() => navigation.navigate('PackagingMaterials')}
-                >
-                    <Text style={styles.navRowText}>{copy.packagingMaterials}</Text>
-                    <Text style={styles.navArrow}>→</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={styles.navRow}
-                    onPress={() => navigation.navigate('ProductRecipes')}
-                >
-                    <Text style={styles.navRowText}>{copy.productRecipes}</Text>
-                    <Text style={styles.navArrow}>→</Text>
-                </TouchableOpacity>
-            </View>
-
             <View style={styles.bottomSpacer} />
         </ScrollView>
     );
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
-    loaderContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: colors.bg,
-    },
     container: {
         flex: 1,
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
     },
     content: {
-        padding: 20,
+        padding: SPACING.lg,
     },
     title: {
-        fontSize: 26,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.5,
-        marginBottom: 24,
-    },
-    // ── Sections ──
-    sectionLabel: {
-        fontSize: 11,
-        fontWeight: '700',
-        color: colors.subtext,
-        letterSpacing: 1,
-        marginBottom: 10,
+        ...v.type.title,
+        color: colors.text.primary,
+        marginBottom: SPACING.xl,
     },
     metricsSection: {
-        marginBottom: 28,
+        marginBottom: SPACING.xl + SPACING.xs,
+    },
+    loadingContent: {
+        width: '100%',
     },
     metricsGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 10,
+        gap: SPACING.md,
     },
     metricCard: {
         width: '47%' as unknown as number,
-        backgroundColor: themeMode === 'dark' ? '#182338' : '#f3f7ff',
-        borderRadius: 14,
-        padding: 16,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 3,
-        borderWidth: 1,
-        borderColor: themeMode === 'dark' ? '#34466b' : '#dbe8ff',
     },
-    metricAccent: {
-        borderLeftWidth: 3,
-        borderLeftColor: colors.success,
-        backgroundColor: themeMode === 'dark' ? '#17291f' : '#f2fbf5',
-        borderColor: themeMode === 'dark' ? '#335f44' : '#d7f0df',
-    },
-    metricExpense: {
-        borderLeftWidth: 3,
-        borderLeftColor: colors.danger,
-        backgroundColor: themeMode === 'dark' ? '#352026' : '#fff5f5',
-        borderColor: themeMode === 'dark' ? '#6f3038' : '#fecaca',
-    },
-    metricLabel: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: colors.subtext,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        marginBottom: 6,
-    },
-    metricValue: {
-        fontSize: 22,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.5,
-    },
-    profitTextGreen: { color: colors.success },
-    profitTextRed: { color: colors.danger },
-    expenseText: { color: colors.danger },
+    profitTextGreen: { color: colors.status.success.fg },
+    profitTextRed: { color: colors.status.danger.fg },
     // ── Net Profit Banner ──
     netProfitBanner: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        borderRadius: 14,
-        padding: 18,
-        marginTop: 10,
-        borderWidth: 1.5,
+        borderRadius: RADIUS.md,
+        padding: SPACING.lg,
+        marginTop: SPACING.md,
+        borderWidth: 1,
     },
     netPositive: {
-        backgroundColor: themeMode === 'dark' ? '#183025' : '#f0fdf4',
-        borderColor: themeMode === 'dark' ? '#2e6b4d' : '#86efac',
+        ...v.successSurface,
     },
     netNegative: {
-        backgroundColor: themeMode === 'dark' ? '#352026' : '#fef2f2',
-        borderColor: themeMode === 'dark' ? '#6f3038' : '#fca5a5',
+        ...v.dangerSurface,
     },
+    // Color comes from profitTextGreen/Red at the call site — this only
+    // sets weight, since the banner is a status surface (text must use
+    // that status's `.fg`, never text.primary).
     netProfitLabel: {
-        fontSize: 14,
+        ...v.type.body,
         fontWeight: '700',
-        color: colors.text,
     },
     netProfitValue: {
-        fontSize: 26,
-        fontWeight: '800',
-        letterSpacing: -0.5,
+        ...v.type.title,
     },
     // ── Navigation ──
     navSection: {
-        marginBottom: 24,
+        marginBottom: SPACING.xl,
     },
+    // Plain divider accent, not status — neutral (matches other screens' card rails).
     navRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        backgroundColor: colors.surface,
-        borderRadius: 12,
-        padding: 16,
-        marginBottom: 8,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.04,
-        shadowRadius: 4,
-        elevation: 1,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.cardCompact,
+        marginBottom: SPACING.sm,
         borderLeftWidth: 3,
-        borderLeftColor: themeMode === 'dark' ? '#34466b' : '#dbe8ff',
+        borderLeftColor: colors.border.strong,
     },
     navRowText: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: colors.text,
+        ...v.type.body,
+        fontWeight: '700',
+        color: colors.text.primary,
     },
     navArrow: {
-        fontSize: 16,
-        color: colors.subtext,
-        fontWeight: '600',
+        ...v.type.heading,
+        color: colors.text.secondary,
     },
     bottomSpacer: {
-        height: 40,
+        height: SPACING.xxl + SPACING.sm,
     },
 });
 }

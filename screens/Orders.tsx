@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
     View,
@@ -10,12 +10,16 @@ import {
     Alert,
     ScrollView,
     Modal,
+    RefreshControl,
 } from 'react-native';
 import { supabase } from '../src/core/supabase/client';
 import { ordersService } from '../src/services/ordersService';
-import { productsService } from '../src/services/productsService';
 import { customersService } from '../src/services/customersService';
+import { todoService } from '../src/services/todoService';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { ConfirmDialog, EmptyState, ErrorState, FilterChip, LoadingSkeleton, OrderFlowStepper, QuickActionButton, SearchInput, SectionHeader, StatusBadge, SyncStatus, WarningCard } from '../src/components/ui';
+import { OVERLAY_SCRIM, SPACING, TOUCH, hitSlopFor } from '../src/core/theme/tokens';
 
 type Product = {
     id: number;
@@ -23,6 +27,8 @@ type Product = {
     price: number;
     cost: number;
     product_type?: string | null;
+    color?: string | null;
+    stock?: { size: string; quantity: number }[];
 };
 
 type Customer = {
@@ -48,6 +54,7 @@ const STATUSES = ['Preparing', 'Ready', 'Shipped', 'Delivered', 'Cancelled'] as 
 export default function Orders() {
     const { colors, language, themeMode } = useAppSettings();
     const styles = React.useMemo(() => makeStyles(colors, themeMode), [colors, themeMode]);
+    const scrollRef = useRef<ScrollView>(null);
     const copy = language === 'tr' ? {
         newOrder: 'Yeni Sipariş',
         customer: 'MÜŞTERİ',
@@ -109,6 +116,41 @@ export default function Orders() {
         need: 'gerekli',
         deliveryFailed: 'Teslimat Başarısız',
         updateFailed: 'Durum güncellenemedi.',
+        searchOrders: 'Müşteri, ürün veya kaynak ara',
+        all: 'Tümü',
+        today: 'Bugün',
+        week: 'Bu hafta',
+        needsAttention: 'Dikkat Gereken Siparişler',
+        preparingWarning: 'Hazırlanan siparişler teslimata ilerletilmeyi bekliyor.',
+        nextStatus: 'Sonraki durum',
+        cancelOrder: 'Siparişi iptal et',
+        confirmCancel: 'Bu sipariş iptal edilsin mi?',
+        orderLabel: 'Sipariş',
+        paymentNotTracked: 'Ödeme takip edilmiyor',
+        flowLabels: {
+            new: 'Yeni',
+            production: 'Üretimde',
+            ready: 'Paketlenecek',
+            packed: 'Paketlendi',
+            delivered: 'Teslim',
+            cancelled: 'İptal',
+        },
+        readyToPack: 'Bu sipariş paketlemeye hazır',
+        createPackingTask: 'Paketleme görevi oluştur',
+        notifyIremLater: 'İrem için takip ekle',
+        packingTaskCreated: 'Paketleme görevi oluşturuldu.',
+        packingTaskFailed: 'Paketleme görevi oluşturulamadı.',
+        availableStock: 'Mevcut stok',
+        lowAfterOrder: 'Bu siparişten sonra stok düşük kalabilir.',
+        negativeAfterOrder: 'Bu sipariş stoku negatife düşürebilir.',
+        completeConfirm: 'Bu sipariş teslim edildi olarak işaretlenecek ve stok düşümü kontrol edilecek.',
+        synced: 'Senkron',
+        refreshing: 'Yenileniyor...',
+        retry: 'Tekrar dene',
+        ordersLoadFailed: 'Siparişler yüklenemedi.',
+        ordersLoadHelp: 'Bağlantıyı kontrol edip tekrar deneyin.',
+        updatingOrder: 'Güncelleniyor...',
+        creatingTask: 'Görev oluşturuluyor...',
     } : {
         newOrder: 'New Order',
         customer: 'CUSTOMER',
@@ -170,6 +212,41 @@ export default function Orders() {
         need: 'need',
         deliveryFailed: 'Delivery Failed',
         updateFailed: 'Could not update status.',
+        searchOrders: 'Search customer, product, or channel',
+        all: 'All',
+        today: 'Today',
+        week: 'This week',
+        needsAttention: 'Orders Needing Attention',
+        preparingWarning: 'Preparing orders are waiting to move forward.',
+        nextStatus: 'Next status',
+        cancelOrder: 'Cancel order',
+        confirmCancel: 'Cancel this order?',
+        orderLabel: 'Order',
+        paymentNotTracked: 'Payment not tracked',
+        flowLabels: {
+            new: 'New',
+            production: 'In production',
+            ready: 'Ready to pack',
+            packed: 'Packed',
+            delivered: 'Delivered',
+            cancelled: 'Cancelled',
+        },
+        readyToPack: 'This order is ready to pack',
+        createPackingTask: 'Create packing task',
+        notifyIremLater: 'Add Irem follow-up',
+        packingTaskCreated: 'Packing task created.',
+        packingTaskFailed: 'Could not create packing task.',
+        availableStock: 'Available stock',
+        lowAfterOrder: 'Stock may be low after this order.',
+        negativeAfterOrder: 'This order may make stock negative.',
+        completeConfirm: 'This order will be marked delivered and stock deduction will be checked.',
+        synced: 'Synced',
+        refreshing: 'Refreshing...',
+        retry: 'Retry',
+        ordersLoadFailed: 'Could not load orders.',
+        ordersLoadHelp: 'Check the connection and try again.',
+        updatingOrder: 'Updating...',
+        creatingTask: 'Creating task...',
     };
     const [products, setProducts] = useState<Product[]>([]);
     const [loadingProducts, setLoadingProducts] = useState(true);
@@ -197,35 +274,75 @@ export default function Orders() {
     // Orders list
     const [orders, setOrders] = useState<any[]>([]);
     const [loadingOrders, setLoadingOrders] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [ordersError, setOrdersError] = useState('');
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+    const [busyOrderAction, setBusyOrderAction] = useState<string | null>(null);
+    const [packingTaskBusyId, setPackingTaskBusyId] = useState<number | string | null>(null);
+    const [orderSearch, setOrderSearch] = useState('');
+    const [statusFilter, setStatusFilter] = useState<string>('all');
+    const [sourceFilter, setSourceFilter] = useState<string>('all');
+    const [typeFilter, setTypeFilter] = useState<string>('all');
+    const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week'>('all');
+    const fetchingOrdersRef = useRef(false);
+    const fetchingProductsRef = useRef(false);
+    const fetchingCustomersRef = useRef(false);
+    const hasLoadedOrdersRef = useRef(false);
+    const hasLoadedProductsRef = useRef(false);
 
     // Status Modal
     const [statusModalVisible, setStatusModalVisible] = useState(false);
     const [statusOrderSelected, setStatusOrderSelected] = useState<any>(null);
+    const [confirmState, setConfirmState] = useState<{
+        visible: boolean;
+        title: string;
+        message: string;
+        confirmLabel: string;
+        destructive?: boolean;
+        onConfirm: () => void;
+    }>({ visible: false, title: '', message: '', confirmLabel: '', onConfirm: () => undefined });
 
     // --- Data fetching ---
 
     const fetchProducts = useCallback(async () => {
+        if (fetchingProductsRef.current) return;
+        fetchingProductsRef.current = true;
         try {
-            setLoadingProducts(true);
-            const { data, error } = await productsService.getProducts();
+            if (!hasLoadedProductsRef.current) setLoadingProducts(true);
+            const { data, error } = await supabase
+                .from('products')
+                .select('*, stock(size, quantity)')
+                .order('id', { ascending: false });
             if (error) return;
             setProducts((data as unknown) as Product[]);
-        } catch { /* silent */ } finally { setLoadingProducts(false); }
+            hasLoadedProductsRef.current = true;
+        } catch { /* silent */ } finally { setLoadingProducts(false); fetchingProductsRef.current = false; }
     }, []);
 
     const fetchOrders = useCallback(async () => {
+        if (fetchingOrdersRef.current) {
+            setRefreshing(false);
+            return;
+        }
+        fetchingOrdersRef.current = true;
         try {
-            setLoadingOrders(true);
+            if (!hasLoadedOrdersRef.current) setLoadingOrders(true);
             const { data, error } = await ordersService.getOrders(30);
-            if (error) return;
+            if (error) {
+                setOrdersError(copy.ordersLoadFailed);
+                return;
+            }
             const mapped = data?.map(o => {
                 const orderItems = Array.isArray(o.order_items) ? o.order_items : [];
-                const itemStrings = orderItems.map((item: Record<string, unknown>) => {
-                    const prodData = item.products as Record<string, unknown> | null;
-                    const productName = prodData ? String(prodData.name || 'Unknown') : 'Unknown';
-                    const size = String(item.size || '');
-                    const itemQty = Number(item.quantity || 0);
-                    return size ? `${productName} — ${size} × ${itemQty}` : `${productName} × ${itemQty}`;
+                    const productTypes: string[] = [];
+                    const itemStrings = orderItems.map((item: Record<string, unknown>) => {
+                        const prodData = item.products as Record<string, unknown> | null;
+                        const productName = prodData ? String(prodData.name || 'Unknown') : 'Unknown';
+                        const productType = prodData ? String(prodData.product_type || '') : '';
+                        if (productType && !productTypes.includes(productType)) productTypes.push(productType);
+                        const size = String(item.size || '');
+                        const itemQty = Number(item.quantity || 0);
+                        return size ? `${productName} — ${size} × ${itemQty}` : `${productName} × ${itemQty}`;
                 });
                 return {
                     id: o.id,
@@ -233,6 +350,7 @@ export default function Orders() {
                     items: itemStrings.length > 0 ? itemStrings : [copy.noItems],
                     status: o.status,
                     source: o.source || null,
+                    product_types: productTypes,
                     note: o.note || null,
                     packaging_cost: Number(o.packaging_cost) || 0,
                     total_price: Number(o.total_price) || 0,
@@ -240,15 +358,26 @@ export default function Orders() {
                 };
             }) || [];
             setOrders(mapped);
-        } catch { /* silent */ } finally { setLoadingOrders(false); }
-    }, [copy.noItems]);
+            setOrdersError('');
+            setLastUpdated(new Date());
+            hasLoadedOrdersRef.current = true;
+        } catch {
+            setOrdersError(copy.ordersLoadFailed);
+        } finally {
+            setLoadingOrders(false);
+            setRefreshing(false);
+            fetchingOrdersRef.current = false;
+        }
+    }, [copy.noItems, copy.ordersLoadFailed]);
 
     const fetchCustomers = useCallback(async () => {
+        if (fetchingCustomersRef.current) return;
+        fetchingCustomersRef.current = true;
         try {
             const { data, error } = await customersService.getCustomers();
             if (error) return;
             setCustomers((data as unknown) as Customer[]);
-        } catch { /* silent */ }
+        } catch { /* silent */ } finally { fetchingCustomersRef.current = false; }
     }, []);
 
     useFocusEffect(useCallback(() => {
@@ -256,7 +385,6 @@ export default function Orders() {
     }, [fetchOrders, fetchProducts, fetchCustomers]));
 
     useEffect(() => {
-        fetchProducts(); fetchOrders(); fetchCustomers();
         const ch1 = supabase.channel('orders-rt')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => fetchOrders())
             .subscribe();
@@ -265,6 +393,13 @@ export default function Orders() {
             .subscribe();
         return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
     }, [fetchProducts, fetchOrders, fetchCustomers]);
+
+    const onRefresh = useCallback(() => {
+        setRefreshing(true);
+        fetchOrders();
+        fetchProducts();
+        fetchCustomers();
+    }, [fetchCustomers, fetchOrders, fetchProducts]);
 
     // --- Computed ---
 
@@ -288,6 +423,53 @@ export default function Orders() {
         cart.reduce((sum, item) => sum + item.quantity, 0)
     , [cart]);
 
+    const sourceOptions = useMemo(() => {
+        const values = new Set<string>();
+        orders.forEach(order => { if (order.source) values.add(String(order.source)); });
+        SOURCES.forEach(s => values.add(s));
+        return Array.from(values);
+    }, [orders]);
+
+    const typeOptions = useMemo(() => {
+        const values = new Set<string>();
+        products.forEach(product => { if (product.product_type) values.add(String(product.product_type)); });
+        orders.forEach(order => (order.product_types || []).forEach((type: string) => values.add(type)));
+        return Array.from(values);
+    }, [orders, products]);
+
+    const filteredOrders = useMemo(() => {
+        const now = new Date();
+        const startOfToday = new Date(now);
+        startOfToday.setHours(0, 0, 0, 0);
+        const startOfWeek = new Date(startOfToday);
+        startOfWeek.setDate(startOfWeek.getDate() - 7);
+        const q = orderSearch.trim().toLowerCase();
+
+        return orders.filter(order => {
+            const createdAt = order.created_at ? new Date(order.created_at) : null;
+            const haystack = [
+                order.customer_name,
+                order.source,
+                order.status,
+                ...(order.items || []),
+                ...(order.product_types || []),
+            ].join(' ').toLowerCase();
+            const matchesSearch = !q || haystack.includes(q);
+            const matchesStatus = statusFilter === 'all' || String(order.status).toLowerCase() === statusFilter.toLowerCase();
+            const matchesSource = sourceFilter === 'all' || String(order.source || '').toLowerCase() === sourceFilter.toLowerCase();
+            const matchesType = typeFilter === 'all' || (order.product_types || []).some((type: string) => type.toLowerCase() === typeFilter.toLowerCase());
+            const matchesDate =
+                dateFilter === 'all' ||
+                (dateFilter === 'today' && createdAt && createdAt >= startOfToday) ||
+                (dateFilter === 'week' && createdAt && createdAt >= startOfWeek);
+            return matchesSearch && matchesStatus && matchesSource && matchesType && matchesDate;
+        });
+    }, [dateFilter, orderSearch, orders, sourceFilter, statusFilter, typeFilter]);
+
+    const attentionOrders = useMemo(() =>
+        orders.filter(order => ['Preparing', 'Ready'].includes(String(order.status)))
+    , [orders]);
+
     function isBagProduct(product: Product | null) {
         if (!product) return false;
         const type = String(product.product_type || '').trim().toLowerCase();
@@ -295,6 +477,15 @@ export default function Orders() {
     }
 
     const selectedProductIsBag = isBagProduct(selectedProduct);
+    const selectedStockQty = useMemo(() => {
+        if (!selectedProduct) return null;
+        if (selectedProductIsBag) {
+            return selectedProduct.stock?.reduce((sum, stock) => sum + (Number(stock.quantity) || 0), 0) || 0;
+        }
+        return selectedProduct.stock?.find(stock => stock.size === selectedSize)?.quantity ?? 0;
+    }, [selectedProduct, selectedProductIsBag, selectedSize]);
+    const selectedQtyNumber = parseInt(qty, 10) || 0;
+    const stockAfterSelected = selectedStockQty === null ? null : selectedStockQty - selectedQtyNumber;
 
     // --- Cart actions ---
 
@@ -415,7 +606,10 @@ export default function Orders() {
     // --- Status update ---
 
     async function handleStatusUpdate(order: any, newStatus: string) {
+        const busyKey = `${order.id}-${newStatus}`;
+        if (busyOrderAction) return;
         try {
+            setBusyOrderAction(busyKey);
             if (newStatus === 'Delivered') {
                 const { items, error: stockErr } = await ordersService.getOrderWithStock(order.id);
                 if (stockErr || !items) {
@@ -445,30 +639,9 @@ export default function Orders() {
         } catch {
             Alert.alert(copy.error, copy.somethingWrong);
         } finally {
+            setBusyOrderAction(null);
             setStatusModalVisible(false);
             setStatusOrderSelected(null);
-        }
-    }
-
-    function getStatusBadgeStyle(status: string) {
-        switch (status) {
-            case 'Preparing': return { backgroundColor: '#FEF3C7' };
-            case 'Ready': return { backgroundColor: '#E0E7FF' };
-            case 'Shipped': return { backgroundColor: '#DBEAFE' };
-            case 'Delivered': return { backgroundColor: '#D1FAE5' };
-            case 'Cancelled': return { backgroundColor: '#FEE2E2' };
-            default: return { backgroundColor: '#F3F4F6' };
-        }
-    }
-
-    function getStatusTextStyle(status: string) {
-        switch (status) {
-            case 'Preparing': return { color: '#92400E' };
-            case 'Ready': return { color: '#3730A3' };
-            case 'Shipped': return { color: '#1E40AF' };
-            case 'Delivered': return { color: '#065F46' };
-            case 'Cancelled': return { color: '#991B1B' };
-            default: return { color: '#555' };
         }
     }
 
@@ -477,8 +650,66 @@ export default function Orders() {
         return normalized ? copy.statusLabels[normalized] : status;
     }
 
+    function getNextStatus(status: string) {
+        const idx = STATUSES.findIndex(s => s.toLowerCase() === String(status).toLowerCase());
+        if (idx < 0 || idx >= STATUSES.length - 3) return null;
+        return STATUSES[idx + 1];
+    }
+
+    function confirmCancelOrder(order: any) {
+        setConfirmState({
+            visible: true,
+            title: copy.cancelOrder,
+            message: copy.confirmCancel,
+            confirmLabel: copy.cancelOrder,
+            destructive: true,
+            onConfirm: () => handleStatusUpdate(order, 'Cancelled'),
+        });
+    }
+
+    function confirmImportantStatus(order: any, status: string) {
+        if (status === 'Delivered') {
+            setConfirmState({
+                visible: true,
+                title: getStatusLabel(status),
+                message: copy.completeConfirm,
+                confirmLabel: getStatusLabel(status),
+                onConfirm: () => handleStatusUpdate(order, status),
+            });
+            return;
+        }
+        handleStatusUpdate(order, status);
+    }
+
+    async function createPackingTask(order: any, followUp = false) {
+        if (packingTaskBusyId) return;
+        setPackingTaskBusyId(order.id);
+        try {
+            const productSummary = Array.isArray(order.items) ? order.items.join(', ') : '';
+            const title = followUp
+                ? `Follow up packing with Irem · Order #${order.id}`
+                : `Pack order #${order.id} · ${order.customer_name}`;
+            const description = [
+                `${copy.customerName}: ${order.customer_name}`,
+                `${copy.source}: ${order.source || '-'}`,
+                `${copy.paymentNotTracked}`,
+                productSummary,
+            ].filter(Boolean).join('\n');
+            const { error } = await todoService.addTask(title, 'todo', 'yuniee', { description });
+            Alert.alert(error ? copy.error : copy.success, error ? copy.packingTaskFailed : copy.packingTaskCreated);
+        } finally {
+            setPackingTaskBusyId(null);
+        }
+    }
+
     return (
-        <ScrollView style={styles.container} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+            ref={scrollRef}
+            style={styles.container}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.scrollContent}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        >
             <Text style={styles.title}>{copy.newOrder}</Text>
 
             {/* ═══ SECTION 1: Customer ═══ */}
@@ -492,7 +723,7 @@ export default function Orders() {
                         if (selectedCustomer && text !== selectedCustomer.name) setSelectedCustomer(null);
                     }}
                     style={styles.input}
-                    placeholderTextColor="#9ca3af"
+                    placeholderTextColor={colors.text.secondary}
                 />
                 {!selectedCustomer && customerName.trim().length > 0 && filteredCustomers.length > 0 && (
                     <View style={styles.dropdown}>
@@ -505,8 +736,8 @@ export default function Orders() {
                     </View>
                 )}
                 <View style={styles.row}>
-                    <TextInput placeholder={copy.phone} value={phone} onChangeText={setPhone} keyboardType="phone-pad" style={[styles.input, styles.halfInput]} placeholderTextColor="#9ca3af" />
-                    <TextInput placeholder={copy.address} value={address} onChangeText={setAddress} style={[styles.input, styles.halfInput]} placeholderTextColor="#9ca3af" />
+                    <TextInput placeholder={copy.phone} value={phone} onChangeText={setPhone} keyboardType="phone-pad" style={[styles.input, styles.halfInput]} placeholderTextColor={colors.text.secondary} />
+                    <TextInput placeholder={copy.address} value={address} onChangeText={setAddress} style={[styles.input, styles.halfInput]} placeholderTextColor={colors.text.secondary} />
                 </View>
             </View>
 
@@ -527,7 +758,7 @@ export default function Orders() {
                             value={productSearch}
                             onChangeText={setProductSearch}
                             style={styles.dropdownSearch}
-                            placeholderTextColor="#9ca3af"
+                            placeholderTextColor={colors.text.secondary}
                         />
                         {loadingProducts ? <ActivityIndicator style={styles.loaderSmall} /> :
                         filteredProducts.length === 0 ? <Text style={styles.dropdownEmpty}>{copy.noMatchingProducts}</Text> :
@@ -561,11 +792,11 @@ export default function Orders() {
                         <View>
                             <Text style={styles.inlineLabel}>{copy.quantity}</Text>
                             <View style={styles.qtyGroup}>
-                                <TouchableOpacity style={styles.qtyBtn} onPress={() => setQty(String(Math.max(1, (parseInt(qty, 10) || 1) - 1)))}>
+                                <TouchableOpacity style={styles.qtyBtn} onPress={() => setQty(String(Math.max(1, (parseInt(qty, 10) || 1) - 1)))} hitSlop={hitSlopFor(34)}>
                                     <Text style={styles.qtyBtnText}>−</Text>
                                 </TouchableOpacity>
                                 <TextInput value={qty} onChangeText={setQty} keyboardType="numeric" style={styles.qtyInput} />
-                                <TouchableOpacity style={styles.qtyBtn} onPress={() => setQty(String((parseInt(qty, 10) || 0) + 1))}>
+                                <TouchableOpacity style={styles.qtyBtn} onPress={() => setQty(String((parseInt(qty, 10) || 0) + 1))} hitSlop={hitSlopFor(34)}>
                                     <Text style={styles.qtyBtnText}>+</Text>
                                 </TouchableOpacity>
                             </View>
@@ -574,6 +805,19 @@ export default function Orders() {
                             <Text style={styles.addItemBtnText}>{copy.addItemButton}</Text>
                         </TouchableOpacity>
                     </View>
+                    {selectedProduct && selectedStockQty !== null ? (
+                        <View style={styles.stockAwareness}>
+                            <StatusBadge
+                                label={`${copy.availableStock}: ${selectedStockQty}`}
+                                tone={stockAfterSelected !== null && stockAfterSelected < 0 ? 'danger' : stockAfterSelected !== null && stockAfterSelected < 3 ? 'warning' : 'success'}
+                            />
+                            {stockAfterSelected !== null && stockAfterSelected < 0 ? (
+                                <Text style={styles.stockAwarenessDanger}>{copy.negativeAfterOrder}</Text>
+                            ) : stockAfterSelected !== null && stockAfterSelected < 3 ? (
+                                <Text style={styles.stockAwarenessWarning}>{copy.lowAfterOrder}</Text>
+                            ) : null}
+                        </View>
+                    ) : null}
                 </View>
             </View>
 
@@ -596,7 +840,7 @@ export default function Orders() {
                                 </Text>
                             </View>
                             <Text style={styles.cartItemPrice}>{(ci.product.price * ci.quantity).toLocaleString()}₺</Text>
-                            <TouchableOpacity style={styles.cartRemoveBtn} onPress={() => handleRemoveFromCart(ci.key)}>
+                            <TouchableOpacity style={styles.cartRemoveBtn} onPress={() => handleRemoveFromCart(ci.key)} hitSlop={hitSlopFor(26)}>
                                 <Text style={styles.cartRemoveText}>✕</Text>
                             </TouchableOpacity>
                         </View>
@@ -626,7 +870,7 @@ export default function Orders() {
                     onChangeText={setNote}
                     style={[styles.input, styles.textArea]}
                     multiline
-                    placeholderTextColor="#9ca3af"
+                    placeholderTextColor={colors.text.secondary}
                 />
             </View>
 
@@ -647,7 +891,7 @@ export default function Orders() {
                 disabled={submitting || cart.length === 0}
             >
                 {submitting ? (
-                    <ActivityIndicator color="#fff" />
+                    <ActivityIndicator color={colors.accent.fg} />
                 ) : (
                     <Text style={styles.submitBtnText}>
                         {cart.length === 0 ? copy.addToContinue : `${copy.createOrder} · ${cartTotal.toLocaleString()}₺`}
@@ -656,18 +900,69 @@ export default function Orders() {
             </TouchableOpacity>
 
             {/* ═══ Recent Orders ═══ */}
-            <Text style={styles.recentTitle}>{copy.recentOrders}</Text>
+            <SectionHeader
+                title={copy.recentOrders}
+                subtitle={`${filteredOrders.length}/${orders.length}`}
+                right={<SyncStatus timestamp={lastUpdated} syncing={refreshing || loadingOrders} label={copy.synced} syncingLabel={copy.refreshing} />}
+            />
+            <QuickActionButton label={copy.createOrder} icon="+" onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })} tone="neutral" style={styles.headerQuickAction} />
+
+            {attentionOrders.length > 0 ? (
+                <WarningCard
+                    title={`${attentionOrders.length} ${copy.needsAttention}`}
+                    description={copy.preparingWarning}
+                    tone="warning"
+                    style={styles.warningCard}
+                />
+            ) : null}
+
+            <View style={styles.orderTools}>
+                <SearchInput value={orderSearch} onChangeText={setOrderSearch} placeholder={copy.searchOrders} />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                    <FilterChip label={copy.all} selected={statusFilter === 'all'} onPress={() => setStatusFilter('all')} count={orders.length} />
+                    {STATUSES.map(status => (
+                        <FilterChip
+                            key={status}
+                            label={getStatusLabel(status)}
+                            selected={statusFilter === status}
+                            onPress={() => setStatusFilter(status)}
+                            count={orders.filter(order => order.status === status).length}
+                            tone={status === 'Delivered' ? 'success' : status === 'Cancelled' ? 'danger' : status === 'Preparing' ? 'warning' : 'primary'}
+                        />
+                    ))}
+                </ScrollView>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                    {(['all', 'today', 'week'] as const).map(value => (
+                        <FilterChip
+                            key={value}
+                            label={value === 'all' ? copy.all : value === 'today' ? copy.today : copy.week}
+                            selected={dateFilter === value}
+                            onPress={() => setDateFilter(value)}
+                        />
+                    ))}
+                    {sourceOptions.map(value => (
+                        <FilterChip key={value} label={value} selected={sourceFilter === value} onPress={() => setSourceFilter(sourceFilter === value ? 'all' : value)} tone="primary" />
+                    ))}
+                    {typeOptions.map(value => (
+                        <FilterChip key={value} label={value} selected={typeFilter === value} onPress={() => setTypeFilter(typeFilter === value ? 'all' : value)} tone="success" />
+                    ))}
+                </ScrollView>
+            </View>
 
             {loadingOrders ? (
-                <ActivityIndicator style={styles.loaderSmall} />
+                <LoadingSkeleton rows={3} />
+            ) : ordersError ? (
+                <ErrorState title={ordersError} description={copy.ordersLoadHelp} retryLabel={copy.retry} onRetry={fetchOrders} />
             ) : orders.length === 0 ? (
-                <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyIcon}>📦</Text>
-                    <Text style={styles.emptyTitle}>{copy.noOrders}</Text>
-                    <Text style={styles.emptyDesc}>{copy.createFirst}</Text>
-                </View>
+                <EmptyState
+                    icon="□"
+                    title={copy.noOrders}
+                    description={copy.createFirst}
+                />
             ) : (
-                orders.map(order => {
+                filteredOrders.length === 0 ? (
+                    <EmptyState icon="⌕" title={copy.noMatchingProducts} description={copy.searchOrders} />
+                ) : filteredOrders.map(order => {
                     const cust = customers.find(c => c.name === order.customer_name);
                     const custPhone = cust?.phone || '';
                     const dateStr = order.created_at
@@ -683,18 +978,21 @@ export default function Orders() {
                                     <Text style={styles.orderCustomer}>{order.customer_name}</Text>
                                     <View style={styles.orderSubline}>
                                         {custPhone ? <Text style={styles.orderPhone}>{custPhone}</Text> : null}
-                                        {order.source ? <Text style={styles.orderSource}>{order.source}</Text> : null}
+                                        {order.source ? <StatusBadge label={order.source} tone="primary" /> : null}
                                     </View>
                                 </View>
                                 <TouchableOpacity
                                     onPress={() => { setStatusOrderSelected(order); setStatusModalVisible(true); }}
-                                    style={[styles.statusBadge, getStatusBadgeStyle(order.status)]}
+                                    style={styles.statusAction}
+                                    hitSlop={hitSlopFor(24)}
                                 >
-                                    <Text style={[styles.statusText, getStatusTextStyle(order.status)]}>
-                                        {getStatusLabel(order.status)} · {copy.change}
-                                    </Text>
+                                    <StatusBadge
+                                        label={`${getStatusLabel(order.status)} · ${copy.change}`}
+                                        tone={order.status === 'Delivered' ? 'success' : order.status === 'Cancelled' ? 'danger' : order.status === 'Preparing' ? 'warning' : 'primary'}
+                                    />
                                 </TouchableOpacity>
                             </View>
+                            <OrderFlowStepper status={order.status} labels={copy.flowLabels} />
 
                             {/* Items */}
                             <View style={styles.orderItems}>
@@ -709,12 +1007,18 @@ export default function Orders() {
                                     <Text style={styles.orderNoteText}>{order.note}</Text>
                                 </View>
                             ) : null}
+                            <View style={styles.paymentRow}>
+                                <StatusBadge label={copy.paymentNotTracked} tone="muted" />
+                            </View>
+                            {order.status === 'Ready' ? (
+                                <WarningCard title={copy.readyToPack} description={order.items.join(', ')} tone="warning" style={styles.packWarning} />
+                            ) : null}
 
                             {/* Footer */}
                             <View style={styles.orderFooter}>
                                 <View style={styles.orderMeta}>
                                     <Text style={styles.orderId}>#{order.id}</Text>
-                                    <Text style={styles.orderDate}>{dateStr}</Text>
+                                    <StatusBadge label={dateStr} tone="muted" />
                                 </View>
                                 <View style={styles.orderPricing}>
                                     {order.packaging_cost > 0 ? (
@@ -722,6 +1026,48 @@ export default function Orders() {
                                     ) : null}
                                     <Text style={styles.orderTotal}>{order.total_price.toLocaleString()}₺</Text>
                                 </View>
+                            </View>
+                            <View style={styles.orderActions}>
+                                {order.status === 'Ready' ? (
+                                    <>
+                                        <QuickActionButton
+                                            label={copy.createPackingTask}
+                                            icon="+"
+                                            onPress={() => createPackingTask(order)}
+                                            tone="warning"
+                                            style={styles.orderActionButton}
+                                            disabled={packingTaskBusyId === order.id}
+                                        />
+                                        <QuickActionButton
+                                            label={copy.notifyIremLater}
+                                            icon="+"
+                                            onPress={() => createPackingTask(order, true)}
+                                            tone="neutral"
+                                            style={styles.orderActionButton}
+                                            disabled={packingTaskBusyId === order.id}
+                                        />
+                                    </>
+                                ) : null}
+                                {getNextStatus(order.status) ? (
+                                    <QuickActionButton
+                                        label={`${copy.nextStatus}: ${getStatusLabel(getNextStatus(order.status) || '')}`}
+                                        icon="→"
+                                        onPress={() => confirmImportantStatus(order, getNextStatus(order.status) || order.status)}
+                                        tone={getNextStatus(order.status) === 'Delivered' ? 'success' : 'primary'}
+                                        style={styles.orderActionButton}
+                                        disabled={busyOrderAction !== null}
+                                    />
+                                ) : null}
+                                {order.status !== 'Cancelled' && order.status !== 'Delivered' ? (
+                                    <QuickActionButton
+                                        label={copy.cancelOrder}
+                                        icon="×"
+                                        onPress={() => confirmCancelOrder(order)}
+                                        tone="neutral"
+                                        style={styles.orderActionButton}
+                                        disabled={busyOrderAction !== null}
+                                    />
+                                ) : null}
                             </View>
                         </View>
                     );
@@ -734,8 +1080,9 @@ export default function Orders() {
                     <View style={styles.modalContainer}>
                         <Text style={styles.modalTitle}>{copy.updateStatus}</Text>
                         <Text style={styles.modalSubtitle}>
-                            Order #{statusOrderSelected?.id} — {statusOrderSelected?.customer_name}
+                            {copy.orderLabel} #{statusOrderSelected?.id} — {statusOrderSelected?.customer_name}
                         </Text>
+                        {busyOrderAction ? <Text style={styles.modalBusyText}>{copy.updatingOrder}</Text> : null}
                         {STATUSES.map(ns => {
                             const isCurrent = ns === statusOrderSelected?.status;
                             const isDelivered = ns === 'Delivered';
@@ -747,7 +1094,8 @@ export default function Orders() {
                                         isCurrent && styles.modalOptionActive,
                                         isDelivered && styles.modalOptionDelivered,
                                     ]}
-                                    onPress={() => handleStatusUpdate(statusOrderSelected, ns)}
+                                    onPress={() => confirmImportantStatus(statusOrderSelected, ns)}
+                                    disabled={busyOrderAction !== null}
                                 >
                                     <Text style={[styles.modalOptionText, isCurrent && styles.modalOptionTextActive]}>
                                         {getStatusLabel(ns)} {isCurrent && `(${copy.current})`} {isDelivered && !isCurrent ? `· ${copy.checksStock}` : ''}
@@ -761,6 +1109,20 @@ export default function Orders() {
                     </View>
                 </View>
             </Modal>
+            <ConfirmDialog
+                visible={confirmState.visible}
+                title={confirmState.title}
+                message={confirmState.message}
+                confirmLabel={confirmState.confirmLabel}
+                cancelLabel={copy.cancel}
+                destructive={confirmState.destructive}
+                onCancel={() => setConfirmState(prev => ({ ...prev, visible: false }))}
+                onConfirm={() => {
+                    const action = confirmState.onConfirm;
+                    setConfirmState(prev => ({ ...prev, visible: false }));
+                    action();
+                }}
+            />
 
             <View style={styles.bottomSpacer} />
         </ScrollView>
@@ -768,147 +1130,157 @@ export default function Orders() {
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.bg },
-    scrollContent: { padding: 20 },
-    title: { fontSize: 26, fontWeight: '800', color: colors.text, letterSpacing: -0.5, marginBottom: 16 },
+    container: { flex: 1, backgroundColor: colors.bg.page },
+    scrollContent: { padding: SPACING.lg },
+    title: { ...v.type.title, color: colors.text.primary, marginBottom: SPACING.lg },
 
-    // ── Sections ──
+    // ── Sections ── (rail is a plain divider accent, not status — neutral)
     section: {
-        backgroundColor: colors.surface, borderRadius: 12, padding: 16, marginBottom: 12,
-        borderWidth: 1, borderColor: colors.border, borderLeftWidth: 3, borderLeftColor: themeMode === 'dark' ? '#34466b' : '#bfdbfe',
-        shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+        ...v.card, marginBottom: SPACING.md,
+        borderWidth: 1, borderColor: colors.border.default, borderLeftWidth: 3, borderLeftColor: colors.border.strong,
     },
-    sectionLabel: { fontSize: 11, fontWeight: '700', color: colors.subtext, letterSpacing: 1, marginBottom: 12 },
-    inlineLabel: { fontSize: 12, fontWeight: '700', color: colors.subtext, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 },
+    sectionLabel: { ...v.type.label, color: colors.text.secondary, marginBottom: SPACING.md },
+    inlineLabel: { ...v.type.label, color: colors.text.secondary, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: SPACING.xs },
 
     // ── Inputs ──
-    input: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, borderRadius: 10, padding: 12, fontSize: 15, marginBottom: 10, color: colors.text },
+    input: { ...v.input, marginBottom: SPACING.sm },
     halfInput: { flex: 1 },
-    row: { flexDirection: 'row', gap: 10 },
+    row: { flexDirection: 'row', gap: SPACING.sm },
     textArea: { minHeight: 56 },
-    noteLabelSpacing: { marginTop: 10 },
+    noteLabelSpacing: { marginTop: SPACING.sm },
 
     // ── Dropdowns ──
-    dropdown: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, marginTop: -6, marginBottom: 8, maxHeight: 230, overflow: 'hidden' },
-    dropdownSearch: { borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surfaceMuted, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.text },
-    dropdownItem: { paddingVertical: 12, paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: colors.border, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-    dropdownText: { fontSize: 15, color: colors.text },
-    dropdownSub: { fontSize: 12, color: colors.subtext },
-    dropdownPrice: { fontSize: 13, fontWeight: '700', color: colors.primary },
-    dropdownEmpty: { padding: 14, color: colors.subtext, textAlign: 'center' },
-    dropdownTrigger: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, borderRadius: 8, padding: 14, marginBottom: 10 },
-    triggerTextPlaceholder: { color: colors.subtext, fontSize: 15 },
-    triggerTextSelected: { color: colors.text, fontSize: 15, fontWeight: '600' },
+    dropdown: { backgroundColor: colors.bg.surface, borderWidth: 1, borderColor: colors.border.default, borderRadius: v.radius.md, marginTop: -SPACING.xs, marginBottom: SPACING.sm, maxHeight: 230, overflow: 'hidden' },
+    dropdownSearch: { ...v.type.body, borderBottomWidth: 1, borderBottomColor: colors.border.default, backgroundColor: colors.bg.raised, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, color: colors.text.primary },
+    dropdownItem: { paddingVertical: SPACING.md, paddingHorizontal: SPACING.md, borderBottomWidth: 1, borderBottomColor: colors.border.default, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    dropdownText: { ...v.type.body, color: colors.text.primary },
+    dropdownSub: { ...v.type.caption, color: colors.text.secondary },
+    dropdownPrice: { ...v.type.label, color: colors.accent.bg },
+    dropdownEmpty: { ...v.type.body, padding: SPACING.md, color: colors.text.secondary, textAlign: 'center' },
+    dropdownTrigger: { ...v.input, justifyContent: 'center', marginBottom: SPACING.sm },
+    triggerTextPlaceholder: { ...v.type.body, color: colors.text.secondary },
+    triggerTextSelected: { ...v.type.body, color: colors.text.primary, fontWeight: '600' },
 
     // ── Item builder ──
-    itemControls: { gap: 8, marginTop: 4 },
-    sizeGroup: { flexDirection: 'row', gap: 6 },
-    sizeBtn: { flex: 1, paddingVertical: 9, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, alignItems: 'center' },
-    sizeBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-    sizeBtnText: { fontSize: 12, fontWeight: '600', color: colors.subtext },
-    sizeBtnTextActive: { color: '#fff' },
-    qtyAddRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginTop: 4 },
-    qtyGroup: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-    qtyBtn: { width: 32, height: 32, borderRadius: 6, backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
-    qtyBtnText: { fontSize: 16, fontWeight: '600', color: colors.text },
-    qtyInput: { width: 36, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, borderRadius: 6, padding: 6, fontSize: 14, textAlign: 'center', color: colors.text },
-    addItemBtn: { flex: 1, backgroundColor: colors.success, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8, alignItems: 'center', shadowColor: colors.success, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 4, elevation: 2 },
-    addItemBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    itemControls: { gap: SPACING.sm, marginTop: SPACING.xs },
+    sizeGroup: { flexDirection: 'row', gap: SPACING.xs },
+    // Adjacent siblings with a small gap: hitSlop would overlap, so the tap target is met by minHeight instead.
+    sizeBtn: { flex: 1, minHeight: TOUCH.minSize, justifyContent: 'center', paddingVertical: SPACING.sm, borderRadius: v.radius.sm, borderWidth: 1, borderColor: colors.border.default, backgroundColor: colors.bg.raised, alignItems: 'center' },
+    sizeBtnActive: { backgroundColor: colors.accent.bg, borderColor: colors.accent.bg },
+    sizeBtnText: { ...v.type.label, color: colors.text.secondary },
+    sizeBtnTextActive: { color: colors.accent.fg },
+    qtyAddRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: SPACING.md, marginTop: SPACING.xs },
+    qtyGroup: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs },
+    // Stepper buttons are visually 34x34; hitSlop brings the tap target to 44x44.
+    qtyBtn: { width: 34, height: 34, borderRadius: v.radius.sm, backgroundColor: colors.bg.raised, borderWidth: 1, borderColor: colors.border.default, alignItems: 'center', justifyContent: 'center' },
+    qtyBtnText: { ...v.type.heading, color: colors.text.primary },
+    qtyInput: { width: 38, borderWidth: 1, borderColor: colors.border.default, backgroundColor: colors.bg.raised, borderRadius: v.radius.sm, padding: SPACING.xs, ...v.type.body, textAlign: 'center', color: colors.text.primary },
+    // A solid saturated success fill can't stay contrast-safe in both themes
+    // (see ConfirmDialog) — this CTA uses the tint+fg pairing instead.
+    addItemBtn: { flex: 1, ...v.primaryButton, backgroundColor: colors.status.success.bg, shadowColor: colors.status.success.bg },
+    addItemBtnText: { color: colors.status.success.fg, ...v.type.label },
+    stockAwareness: { marginTop: SPACING.sm, gap: SPACING.xs, alignItems: 'flex-start' },
+    stockAwarenessWarning: { ...v.type.label, color: colors.status.warning.fg },
+    stockAwarenessDanger: { ...v.type.label, color: colors.status.danger.fg },
 
-    // ── Source ──
-    sourceRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
-    sourceBtn: { paddingVertical: 9, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted },
-    sourceBtnActive: { backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff', borderColor: colors.primary },
-    sourceBtnText: { fontSize: 13, fontWeight: '600', color: colors.subtext },
-    sourceBtnTextActive: { color: colors.primary },
+    // ── Source ── (selected state reads as the "info" status tone, same as a selected FilterChip)
+    sourceRow: { flexDirection: 'row', gap: SPACING.sm, flexWrap: 'wrap', marginBottom: SPACING.sm },
+    // Wrapping row with a small gap: hitSlop would overlap, so the tap target is met by minHeight instead.
+    sourceBtn: { minHeight: TOUCH.minSize, justifyContent: 'center', paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md, borderRadius: v.radius.pill, borderWidth: 1, borderColor: colors.border.default, backgroundColor: colors.bg.raised },
+    sourceBtnActive: { backgroundColor: colors.status.info.bg, borderColor: colors.status.info.fg },
+    sourceBtnText: { ...v.type.label, color: colors.text.secondary },
+    sourceBtnTextActive: { color: colors.status.info.fg },
 
-    // ── Cart ──
+    // ── Cart ── (rail uses the accent — the cart is the "active, about to submit" section)
     cartSection: {
-        backgroundColor: colors.surface, borderRadius: 12, padding: 16, marginBottom: 12,
-        borderWidth: 1, borderColor: colors.border, borderLeftWidth: 3, borderLeftColor: colors.primary,
-        shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+        ...v.card, marginBottom: SPACING.md,
+        borderWidth: 1, borderColor: colors.border.default, borderLeftWidth: 3, borderLeftColor: colors.accent.bg,
     },
-    cartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-    cartCount: { fontSize: 12, fontWeight: '600', color: colors.primary, backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+    cartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.md },
+    // A count pill is decorative, not status — neutral.
+    cartCount: { ...v.type.label, color: colors.text.secondary, backgroundColor: colors.bg.raised, paddingHorizontal: SPACING.sm, paddingVertical: SPACING.xs, borderRadius: v.radius.sm },
     cartItem: {
         flexDirection: 'row', alignItems: 'center',
-        backgroundColor: colors.surfaceMuted, borderRadius: 10, padding: 10, marginBottom: 6,
-        borderWidth: 1, borderColor: colors.border,
+        backgroundColor: colors.bg.raised, borderRadius: v.radius.md, padding: SPACING.md, marginBottom: SPACING.sm,
+        borderWidth: 1, borderColor: colors.border.default,
     },
-    cartItemNum: { width: 22, height: 22, borderRadius: 11, backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-    cartItemNumText: { fontSize: 11, fontWeight: '700', color: colors.primary },
+    // Line-item numbering is decorative, not status — neutral.
+    cartItemNum: { width: 22, height: 22, borderRadius: v.radius.pill, backgroundColor: colors.bg.page, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm },
+    cartItemNumText: { ...v.type.caption, fontWeight: '700', color: colors.text.primary },
     cartItemLeft: { flex: 1 },
-    cartItemName: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 1 },
-    cartItemMeta: { fontSize: 11, color: colors.subtext },
-    cartItemPrice: { fontSize: 14, fontWeight: '700', color: colors.text, marginRight: 8 },
-    cartRemoveBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: themeMode === 'dark' ? '#352026' : '#fee2e2', alignItems: 'center', justifyContent: 'center' },
-    cartRemoveText: { fontSize: 11, fontWeight: '700', color: colors.danger },
+    cartItemName: { ...v.type.body, fontWeight: '700', color: colors.text.primary, marginBottom: 1 },
+    cartItemMeta: { ...v.type.caption, color: colors.text.secondary },
+    cartItemPrice: { ...v.type.body, fontWeight: '700', color: colors.text.primary, marginRight: SPACING.sm },
+    cartRemoveBtn: { width: 26, height: 26, borderRadius: v.radius.pill, backgroundColor: colors.status.danger.bg, alignItems: 'center', justifyContent: 'center' },
+    cartRemoveText: { ...v.type.caption, fontWeight: '700', color: colors.status.danger.fg },
 
-    // ── Totals ──
-    totalsCard: { backgroundColor: themeMode === 'dark' ? '#202542' : '#f4f6ff', borderRadius: 10, padding: 14, marginBottom: 4, borderWidth: 1, borderColor: themeMode === 'dark' ? '#313a67' : '#e0e7ff' },
-    totalsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 },
-    totalsLabel: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.primary },
-    totalsValue: { fontSize: 20, fontWeight: '800', color: colors.primary, letterSpacing: -0.3 },
-    totalsHint: { fontSize: 11, color: colors.subtext, marginTop: 6, lineHeight: 15 },
+    // ── Totals ── (a genuine info-tinted callout — its text must use status.info.fg, not accent)
+    totalsCard: { ...v.infoSurface, borderRadius: v.radius.md, padding: SPACING.md, marginBottom: SPACING.xs, borderWidth: 1 },
+    totalsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: SPACING.md },
+    totalsLabel: { flex: 1, ...v.type.label, color: colors.status.info.fg },
+    totalsValue: { ...v.type.title, color: colors.status.info.fg },
+    totalsHint: { ...v.type.caption, color: colors.text.secondary, marginTop: SPACING.xs },
 
     // ── Submit ──
-    submitBtn: { backgroundColor: colors.primary, paddingVertical: 16, borderRadius: 10, alignItems: 'center', marginTop: 8, shadowColor: colors.primary, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.14, shadowRadius: 6, elevation: 3 },
+    submitBtn: { ...v.primaryButton, marginTop: SPACING.sm },
     submitBtnDisabled: { opacity: 0.5 },
-    submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
+    submitBtnText: { color: colors.accent.fg, ...v.type.heading },
 
     // ── Recent Orders ──
-    recentTitle: { fontSize: 18, fontWeight: '700', marginTop: 32, marginBottom: 12, color: colors.text },
+    headerQuickAction: { paddingVertical: SPACING.sm },
+    warningCard: { marginBottom: SPACING.md },
+    orderTools: { gap: SPACING.sm, marginBottom: SPACING.md },
+    filterRow: { gap: SPACING.sm, paddingRight: SPACING.xs },
 
+    // Rail is a plain divider accent, not status — neutral (matches `section`).
     orderCard: {
-        backgroundColor: colors.surface, borderRadius: 12, padding: 16, marginBottom: 12,
-        shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 3,
-        borderWidth: 1, borderColor: colors.border, borderLeftWidth: 3, borderLeftColor: themeMode === 'dark' ? '#34466b' : '#dbe8ff',
+        ...v.card, marginBottom: SPACING.md,
+        borderWidth: 1, borderColor: colors.border.default, borderLeftWidth: 3, borderLeftColor: colors.border.strong,
     },
-    orderHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
-    orderHeaderLeft: { flex: 1, marginRight: 12 },
-    orderCustomer: { fontSize: 16, fontWeight: '700', color: colors.text, letterSpacing: -0.2 },
-    orderSubline: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 3 },
-    orderPhone: { fontSize: 12, color: colors.subtext },
-    orderSource: { fontSize: 11, color: colors.primary, fontWeight: '600', backgroundColor: themeMode === 'dark' ? '#252b4a' : '#eef2ff', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, overflow: 'hidden' },
-    statusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-    statusText: { fontSize: 12, fontWeight: '700' },
+    orderHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: SPACING.sm },
+    orderHeaderLeft: { flex: 1, marginRight: SPACING.md },
+    orderCustomer: { ...v.type.heading, color: colors.text.primary },
+    orderSubline: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, marginTop: 3 },
+    orderPhone: { ...v.type.caption, color: colors.text.secondary },
+    statusAction: { alignItems: 'flex-end' },
 
     orderItems: { marginBottom: 2 },
-    orderItemText: { fontSize: 13, color: colors.text, lineHeight: 20 },
+    orderItemText: { ...v.type.body, color: colors.text.primary },
 
-    orderNote: { backgroundColor: themeMode === 'dark' ? '#322818' : '#fffbeb', padding: 10, borderRadius: 8, marginTop: 8, borderLeftWidth: 3, borderLeftColor: colors.warning },
-    orderNoteText: { fontSize: 13, color: colors.warning, lineHeight: 18 },
+    // A genuine warning callout — text uses status.warning.fg, not text.primary.
+    orderNote: { ...v.warningSurface, padding: SPACING.sm, borderRadius: v.radius.sm, marginTop: SPACING.sm, borderLeftWidth: 3 },
+    orderNoteText: { ...v.type.label, color: colors.status.warning.fg },
+    paymentRow: { marginTop: SPACING.sm, alignItems: 'flex-start' },
+    packWarning: { marginTop: SPACING.sm },
 
-    orderFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border },
-    orderMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    orderId: { fontSize: 12, color: colors.subtext, fontWeight: '600' },
-    orderDate: { fontSize: 11, color: colors.subtext },
+    orderFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: SPACING.md, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: colors.border.default },
+    orderMeta: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs },
+    orderId: { ...v.type.caption, color: colors.text.secondary, fontWeight: '600' },
     orderPricing: { alignItems: 'flex-end' },
-    pkgCost: { fontSize: 11, fontWeight: '600', color: colors.subtext, marginBottom: 1 },
-    orderTotal: { fontSize: 17, fontWeight: '800', color: colors.text, letterSpacing: -0.3 },
-
-    // ── Empty ──
-    emptyContainer: { alignItems: 'center', paddingTop: 40, paddingBottom: 20 },
-    emptyIcon: { fontSize: 36, marginBottom: 8 },
-    emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 4 },
-    emptyDesc: { fontSize: 13, color: colors.subtext },
+    pkgCost: { ...v.type.caption, color: colors.text.secondary, marginBottom: 1 },
+    orderTotal: { ...v.type.heading, color: colors.text.primary },
+    orderActions: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.md },
+    // QuickActionButton's own base style already guarantees a 44pt minHeight.
+    orderActionButton: { flex: 1 },
 
     // ── Modal ──
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    modalContainer: { backgroundColor: colors.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 24, paddingBottom: 40 },
-    modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 4 },
-    modalSubtitle: { fontSize: 14, color: colors.subtext, marginBottom: 20 },
-    modalOption: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-    modalOptionActive: { backgroundColor: colors.surfaceMuted },
-    modalOptionDelivered: { backgroundColor: themeMode === 'dark' ? '#183025' : '#f0fdf4' },
-    modalOptionText: { fontSize: 16, color: colors.text },
-    modalOptionTextActive: { fontWeight: '700', color: colors.primary },
-    modalCancel: { marginTop: 20, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.surfaceMuted, borderRadius: 8 },
-    modalCancelText: { fontSize: 16, fontWeight: '600', color: colors.text },
+    modalOverlay: { flex: 1, backgroundColor: OVERLAY_SCRIM, justifyContent: 'flex-end' },
+    modalContainer: { backgroundColor: colors.bg.surface, borderTopLeftRadius: v.radius.md, borderTopRightRadius: v.radius.md, padding: SPACING.xl, paddingBottom: SPACING.xxl + SPACING.sm },
+    modalTitle: { ...v.type.title, marginBottom: SPACING.xs, color: colors.text.primary },
+    modalSubtitle: { ...v.type.body, color: colors.text.secondary, marginBottom: SPACING.lg },
+    modalOption: { paddingVertical: SPACING.md, borderBottomWidth: 1, borderBottomColor: colors.border.default },
+    modalOptionActive: { backgroundColor: colors.bg.raised },
+    modalOptionDelivered: { ...v.successSurface },
+    modalOptionText: { ...v.type.heading, color: colors.text.primary },
+    modalOptionTextActive: { fontWeight: '700', color: colors.accent.bg },
+    modalBusyText: { color: colors.text.secondary, ...v.type.label, marginBottom: SPACING.md },
+    modalCancel: { ...v.secondaryButton, marginTop: SPACING.lg },
+    modalCancelText: { ...v.type.heading, color: colors.text.primary },
 
     // ── Misc ──
-    loaderSmall: { padding: 12 },
-    bottomSpacer: { height: 40 },
+    loaderSmall: { padding: SPACING.md },
+    bottomSpacer: { height: SPACING.xxl + SPACING.sm },
 });
 }

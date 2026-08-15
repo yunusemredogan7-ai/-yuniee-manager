@@ -4,12 +4,15 @@ import {
     Text,
     FlatList,
     StyleSheet,
-    ActivityIndicator,
-    RefreshControl
+    RefreshControl,
+    ScrollView
 } from 'react-native';
 import { stockMovementsService, StockMovement } from '../src/services/stockMovementsService';
 import { supabase } from '../src/core/supabase/client';
 import { useAppSettings } from '../src/core/settings/AppSettingsContext';
+import { createVisualSystem } from '../src/core/theme/visualSystem';
+import { EmptyState, FilterChip, LoadingSkeleton, SearchInput, StatusBadge } from '../src/components/ui';
+import { SPACING } from '../src/core/theme/tokens';
 
 export default function StockMovements() {
     const { colors, language, themeMode } = useAppSettings();
@@ -30,6 +33,8 @@ export default function StockMovements() {
             'Manual Adjustment': 'Manuel stok ayarı',
             'Production Entry': 'Üretim girişi',
         },
+        search: 'Stok hareketi ara',
+        all: 'Tümü',
     } : {
         title: 'Stock Movements',
         subtitle: 'Production entries, manual adjustments, and inventory in/out trail.',
@@ -46,10 +51,14 @@ export default function StockMovements() {
             'Manual Adjustment': 'Manual Adjustment',
             'Production Entry': 'Production Entry',
         },
+        search: 'Search movements',
+        all: 'All',
     };
     const [movements, setMovements] = useState<StockMovement[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [movementSearch, setMovementSearch] = useState('');
+    const [typeFilter, setTypeFilter] = useState<string>('all');
 
     const fetchMovements = useCallback(async () => {
         try {
@@ -89,14 +98,29 @@ export default function StockMovements() {
         fetchMovements();
     };
 
-    function getTypeColor(type: string) {
+    const filteredMovements = React.useMemo(() => {
+        const q = movementSearch.trim().toLowerCase();
+        return movements.filter(movement => {
+            const matchesType = typeFilter === 'all' || movement.type === typeFilter;
+            const haystack = [movement.product_name, movement.size, movement.source, movement.type, movement.quantity].join(' ').toLowerCase();
+            const matchesSearch = !q || haystack.includes(q);
+            return matchesType && matchesSearch;
+        });
+    }, [movementSearch, movements, typeFilter]);
+
+    function getTypeTone(type: string): 'success' | 'danger' | 'warning' | 'primary' | 'muted' {
         switch (type) {
-            case 'production': return '#16a34a'; // green
-            case 'sale': return '#dc2626'; // red
-            case 'adjustment': return '#d97706'; // orange
-            case 'return': return '#2563eb'; // blue
-            default: return '#6b7280'; // gray
+            case 'production': return 'success';
+            case 'sale': return 'danger';
+            case 'adjustment': return 'warning';
+            case 'return': return 'primary';
+            default: return 'muted';
         }
+    }
+
+    function getFilterTone(type: string): 'default' | 'primary' | 'success' | 'warning' | 'danger' {
+        const tone = getTypeTone(type);
+        return tone === 'muted' ? 'default' : tone;
     }
 
     function getTypeLabel(type: string) {
@@ -118,12 +142,8 @@ export default function StockMovements() {
         return (
             <View style={styles.card}>
                 <View style={styles.cardHeader}>
-                    <Text style={styles.dateText}>{date}</Text>
-                    <View style={[styles.typeBadge, { borderColor: getTypeColor(item.type) }]}>
-                        <Text style={[styles.typeText, { color: getTypeColor(item.type) }]}>
-                            {getTypeLabel(item.type)}
-                        </Text>
-                    </View>
+                    <StatusBadge label={date} tone="muted" />
+                    <StatusBadge label={getTypeLabel(item.type)} tone={getTypeTone(item.type)} dot />
                 </View>
 
                 <View style={styles.cardBody}>
@@ -152,7 +172,7 @@ export default function StockMovements() {
     if (loading) {
         return (
             <View style={styles.loaderContainer}>
-                <ActivityIndicator size="large" color={colors.primary} />
+                <LoadingSkeleton rows={5} style={styles.loadingContent} />
             </View>
         );
     }
@@ -160,7 +180,7 @@ export default function StockMovements() {
     return (
         <View style={styles.container}>
             <FlatList
-                data={movements}
+                data={filteredMovements}
                 keyExtractor={(item) => String(item.id)}
                 renderItem={renderItem}
                 contentContainerStyle={styles.listContent}
@@ -168,13 +188,29 @@ export default function StockMovements() {
                     <View style={styles.screenHeader}>
                         <Text style={styles.screenTitle}>{copy.title}</Text>
                         <Text style={styles.screenSubtitle}>{copy.subtitle}</Text>
+                        <View style={styles.tools}>
+                            <SearchInput value={movementSearch} onChangeText={setMovementSearch} placeholder={copy.search} />
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                                <FilterChip label={copy.all} selected={typeFilter === 'all'} onPress={() => setTypeFilter('all')} count={movements.length} />
+                                {Object.keys(copy.movementTypes).map(type => (
+                                    <FilterChip
+                                        key={type}
+                                        label={getTypeLabel(type)}
+                                        selected={typeFilter === type}
+                                        onPress={() => setTypeFilter(typeFilter === type ? 'all' : type)}
+                                        count={movements.filter(movement => movement.type === type).length}
+                                        tone={getFilterTone(type)}
+                                    />
+                                ))}
+                            </ScrollView>
+                        </View>
                     </View>
                 }
                 refreshControl={
                     <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
                 }
                 ListEmptyComponent={
-                    <Text style={styles.emptyText}>{copy.empty}</Text>
+                    <EmptyState icon="↕" title={copy.empty} description={copy.subtitle} />
                 }
             />
         </View>
@@ -182,68 +218,59 @@ export default function StockMovements() {
 }
 
 function makeStyles(colors: ReturnType<typeof useAppSettings>['colors'], themeMode: 'light' | 'dark') {
+const v = createVisualSystem(colors, themeMode);
 return StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
     },
     loaderContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: colors.bg,
+        backgroundColor: colors.bg.page,
+    },
+    loadingContent: {
+        width: '100%',
+        paddingHorizontal: SPACING.lg,
     },
     listContent: {
-        padding: 16,
-        paddingBottom: 40,
+        padding: SPACING.lg,
+        paddingBottom: SPACING.xxl + SPACING.sm,
     },
     screenHeader: {
-        marginBottom: 14,
+        marginBottom: SPACING.md,
     },
     screenTitle: {
-        fontSize: 24,
-        fontWeight: '800',
-        color: colors.text,
-        letterSpacing: -0.4,
+        ...v.type.title,
+        color: colors.text.primary,
     },
     screenSubtitle: {
-        fontSize: 14,
-        color: colors.subtext,
-        lineHeight: 20,
+        ...v.type.body,
+        color: colors.text.secondary,
         marginTop: 3,
     },
+    tools: {
+        gap: SPACING.sm,
+        marginTop: SPACING.md,
+    },
+    filterRow: {
+        gap: SPACING.sm,
+        paddingRight: SPACING.xs,
+    },
+    // Plain divider accent, not status — neutral (matches other screens' card rails).
     card: {
-        backgroundColor: colors.surface,
-        borderRadius: 14,
-        padding: 14,
-        marginBottom: 12,
-        borderWidth: 1,
-        borderColor: colors.border,
+        ...v.card,
+        padding: SPACING.md,
+        marginBottom: SPACING.md,
         borderLeftWidth: 3,
-        borderLeftColor: themeMode === 'dark' ? '#34466b' : '#bfdbfe',
+        borderLeftColor: colors.border.strong,
     },
     cardHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 10,
-    },
-    dateText: {
-        fontSize: 12,
-        color: colors.subtext,
-        fontWeight: '500',
-    },
-    typeBadge: {
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 6,
-        borderWidth: 1,
-        backgroundColor: colors.surfaceMuted,
-    },
-    typeText: {
-        fontSize: 11,
-        fontWeight: '700',
-        letterSpacing: 0.5,
+        marginBottom: SPACING.sm,
     },
     cardBody: {
         flexDirection: 'row',
@@ -254,48 +281,39 @@ return StyleSheet.create({
         flex: 1,
     },
     productName: {
-        fontSize: 15,
-        fontWeight: '700',
-        color: colors.text,
-        marginBottom: 4,
+        ...v.type.heading,
+        color: colors.text.primary,
+        marginBottom: SPACING.xs,
     },
     sizeText: {
-        fontSize: 13,
-        color: colors.subtext,
-        fontWeight: '600',
+        ...v.type.label,
+        color: colors.text.secondary,
     },
     qtyText: {
-        fontSize: 18,
-        fontWeight: '800',
+        ...v.type.title,
         textAlign: 'right',
     },
     qtyBlock: {
         alignItems: 'flex-end',
-        marginLeft: 12,
+        marginLeft: SPACING.md,
     },
     qtyLabel: {
-        fontSize: 11,
-        color: colors.subtext,
+        ...v.type.caption,
+        color: colors.text.secondary,
         fontWeight: '700',
         marginBottom: 2,
     },
     qtyPositive: {
-        color: '#16a34a',
+        color: colors.status.success.fg,
     },
     qtyNegative: {
-        color: '#dc2626',
+        color: colors.status.danger.fg,
     },
     sourceText: {
-        marginTop: 10,
-        fontSize: 12,
-        color: colors.subtext,
+        marginTop: SPACING.sm,
+        ...v.type.caption,
+        color: colors.text.secondary,
         fontStyle: 'italic',
-    },
-    emptyText: {
-        textAlign: 'center',
-        color: colors.subtext,
-        marginTop: 40,
-        fontSize: 14,
     },
 });
 }
